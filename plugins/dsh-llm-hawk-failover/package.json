@@ -1,0 +1,51 @@
+{
+  "name": "dsh-llm-hawk-failover",
+  "version": "0.1.0",
+  "description": "Out-of-tree dsh plugin: provider failover for the agent loop — quarantines a failing model route and walks an ordered chain to a backup provider.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "plugin",
+    "deepseek",
+    "llm",
+    "failover",
+    "hawk"
+  ],
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node test/run.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsdown": "^0.15.0",
+    "typescript": "^5.7.2"
+  },
+  "author": "Bitcopath (https://github.com/bitcopath)",
+  "homepage": "https://github.com/bitcopath/dsh-plugins/tree/main/plugins/dsh-llm-hawk-failover#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bitcopath/dsh-plugins.git",
+    "directory": "plugins/dsh-llm-hawk-failover"
+  },
+  "bugs": {
+    "url": "https://github.com/bitcopath/dsh-plugins/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

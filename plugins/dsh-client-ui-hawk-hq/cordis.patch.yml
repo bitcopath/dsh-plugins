@@ -1,0 +1,11 @@
+# The hawk-hq bundle patch: mounts the Hawk HQ plugin row (GPU Watchdog,
+# Notifications, HQ Dashboard settings pages + host routes). Declared through
+# `dsh.bundle.patch` in package.json, so
+# `dsh plugin --profile web add link:<this dir>` automatically appends this
+# package to the profile's `dsh.profile.bundles` layer stack and the row
+# mounts on the next boot — no manual profile cordis.patch.yml edit needed.
+# `id` is the cordis plugin id (hawk-hq); `name` is the package specifier the
+# loader resolves (the npm package name).
+- insert:
+    - id: hawk-hq
+      name: "dsh-client-ui-hawk-hq"
