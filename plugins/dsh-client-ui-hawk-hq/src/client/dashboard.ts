@@ -75,7 +75,20 @@ function QuotaRow({ quota }: { quota: QuotaStat }): ReactNode {
 /** Load the stats payload from the host half. */
 async function loadStats(): Promise<StatsPayload> {
   const response = await fetch(`${API}/stats`, { headers: { accept: 'application/json' } })
-  if (!response.ok) throw new Error(`stats request failed with status ${response.status}`)
+  if (!response.ok) {
+    // The host half answers a failure with { error: { code, message } } — show
+    // its message instead of a bare status, so the common case (no stats
+    // database on this machine) reads as the actionable thing it is rather than
+    // as a broken page.
+    let detail = ''
+    try {
+      const body = await response.json() as { error?: { message?: string } }
+      detail = body.error?.message ?? ''
+    } catch {
+      // Not JSON, or the body was already consumed: fall back to the status.
+    }
+    throw new Error(detail === '' ? `stats request failed with status ${response.status}` : detail)
+  }
   return await response.json() as StatsPayload
 }
 

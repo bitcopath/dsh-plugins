@@ -411,6 +411,22 @@ function errorBody(code: string, message: string): ErrorResponse {
   return { error: { code, message } }
 }
 
+/**
+ * One short line for an error body. A failed `execFile` carries the whole
+ * command plus its stderr, which would put a page of internals into an HTTP
+ * response; the useful part is the last line (a Python traceback ends on the
+ * actual exception, e.g. "sqlite3.OperationalError: unable to open database
+ * file"). The untruncated text is already in the harness log via
+ * `ctx.logger.warn`, so nothing diagnosable is lost by shortening this.
+ */
+function briefError(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error)
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line !== '')
+  const last = lines[lines.length - 1] ?? 'internal error'
+  const pick = /(Error|error):/.test(last) ? last : (lines[0] ?? 'internal error')
+  return pick.length > 300 ? `${pick.slice(0, 299)}…` : pick
+}
+
 /** Open one SSE stream. */
 function sseOpen(res: ServerResponse): void {
   res.writeHead(200, {
@@ -713,7 +729,7 @@ function makeHandler(
       sendJson(res, 404, errorBody('not-found', `unknown route ${pathname}`))
     } catch (error) {
       ctx.logger.warn(`hawk-hq: ${pathname}: ${String(error)}`)
-      if (!res.headersSent) sendJson(res, 500, errorBody('internal', String(error)))
+      if (!res.headersSent) sendJson(res, 500, errorBody('internal', briefError(error)))
       else res.end()
     }
   }

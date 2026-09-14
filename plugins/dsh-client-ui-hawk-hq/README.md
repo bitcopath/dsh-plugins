@@ -68,8 +68,10 @@ interface HawkHqConfig {
 ```
 
 Every path is optional and every reader degrades: a missing log or JSONL renders as empty /
-`unavailable`, and a missing stats DB surfaces as an error message on the Dashboard page.
-Nothing is ever invented to fill a card.
+`unavailable`, a missing stats DB surfaces as a **one-line** error on the Dashboard card (e.g.
+`sqlite3.OperationalError: unable to open database file`), and the untruncated error text goes
+to the harness log. The error body is deliberately short — the host half never returns a
+command dump to the browser. Nothing is ever invented to fill a card.
 
 ## Install
 
