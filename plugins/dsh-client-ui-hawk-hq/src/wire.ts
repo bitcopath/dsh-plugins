@@ -38,12 +38,51 @@ export interface GuardianState {
   readonly unavailable: boolean
 }
 
+/** One model ComfyUI currently holds in VRAM. */
+export interface ComfyModel {
+  /** Friendly name shown in the panel (e.g. `MiniMax H3`). */
+  readonly label: string
+  /** The loader class ComfyUI logged (e.g. `MiniMaxH3`), kept for the tooltip. */
+  readonly cls: string
+  /** What the model makes, for the chip colour. */
+  readonly kind: 'video' | 'image' | 'audio' | 'text' | 'vae' | 'other'
+}
+
+/**
+ * Live ComfyUI view for the sidebar panel: rendered only while ComfyUI is up
+ * AND something is genuinely resident, so the panel is simply absent when the
+ * engine is idle. `models` is empty when nothing is in VRAM, even if the log
+ * still carries older "Requested to load" lines.
+ */
+export interface ComfyStatePayload {
+  /** ComfyUI answered on its HTTP port. */
+  readonly up: boolean
+  readonly version: string | null
+  /** Models resident in GPU memory right now, oldest first. */
+  readonly models: readonly ComfyModel[]
+  /** A prompt is executing. */
+  readonly running: boolean
+  /** Prompts waiting behind it. */
+  readonly pending: number
+  /** Sampling progress of the running prompt, e.g. `4/8`. */
+  readonly progress: string | null
+  /** Node classes of the running prompt, for the "what is it doing" line. */
+  readonly workflow: readonly string[]
+  /** VRAM held on the discrete card as ComfyUI sees it, bytes. */
+  readonly vramUsedB: number | null
+  readonly vramTotalB: number | null
+  /** Present when the read failed while ComfyUI was expected up. */
+  readonly error?: string
+}
+
 /** GET /plugin/hawk-hq/gpu and SSE `state` event payload. */
 export interface GpuStatePayload {
   readonly gpu: GpuSample | null
   /** Present when the rocm-smi read failed. */
   readonly gpuError?: string
   readonly guardian: GuardianState
+  /** ComfyUI's own view of the card, for the sidebar panel. */
+  readonly comfy?: ComfyStatePayload | null
   /** ISO timestamp of this sample. */
   readonly at: string
 }

@@ -58,7 +58,8 @@ let it make a fresh backup.
 
 1. Run `procedures/verify.sh` and read its output — not an assurance, the actual checks.
 2. Open the UI once and look at the four surfaces that live in the shell: the badge, the
-   composer Skills button, the sidebar GPU panel, and Settings → the three extra pages.
+   composer Skills button, the sidebar GPU panel (with the ComfyUI block above it when the
+   engine holds something), and Settings → the three extra pages.
 3. Write down what broke. A short log of version → what died → what you had to re-port is the
    most valuable file in a setup like this, because the next upgrade repeats the pattern.
 4. If the CSS checks failed, re-point them now while the diff is small.

@@ -2,7 +2,8 @@
  * hawk-hq host half: serves the three Hawk HQ data feeds over the plugin's
  * own HTTP/SSE routes (`ctx.webServer`):
  *   - GET  /plugin/hawk-hq/gpu                  — one rocm-smi sample (~2s
- *     cache) plus the gpu-guardian log tail;
+ *     cache) plus the gpu-guardian log tail and ComfyUI's live state
+ *     (version, resident models, queue, VRAM) for the sidebar ComfyUI panel;
  *   - GET  /plugin/hawk-hq/gpu/events           — SSE, same payload every 5s;
  *   - GET  /plugin/hawk-hq/notifications        — ~/.dsh/notifications.jsonl
  *     tail, newest first;
@@ -30,6 +31,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
+  ComfyModel, ComfyStatePayload,
   DailyVolume, ErrorResponse, GpuSample, GpuStatePayload, GuardianState,
   DailySpend, NotificationItem, NotificationsPayload, ProviderStat, QuotaStat, StatsPayload,
   VersionPayload,
@@ -65,11 +67,17 @@ export interface HawkHqConfig {
   readonly notificationsFile?: string
   /** dsh-hq stats sqlite database path. */
   readonly statsDb?: string
+  /** ComfyUI HTTP base (the panel reads /system_stats and /queue). */
+  readonly comfyUrl?: string
+  /** Directory holding ComfyUI's stdout logs (newest is parsed for models). */
+  readonly comfyLogDir?: string
 }
 
 const DEFAULT_GUARDIAN_LOG = `${homedir()}/dsh-hq/logs/gpu-guardian.log`
 const DEFAULT_NOTIFICATIONS = `${homedir()}/.dsh/notifications.jsonl`
 const DEFAULT_STATS_DB = `${homedir()}/dsh-hq/stats.db`
+const DEFAULT_COMFY_URL = 'http://127.0.0.1:8188'
+const DEFAULT_COMFY_LOG_DIR = `${homedir()}/comfyui/logs`
 
 /** How long one rocm-smi sample stays valid (the card polls are not free). */
 const GPU_CACHE_MS = 2000
@@ -233,17 +241,180 @@ async function readGuardian(logPath: string): Promise<GuardianState> {
   return { rung, lines, unavailable: false }
 }
 
-/** Compose the GPU page payload (rocm-smi + guardian tail). */
-async function readGpuState(guardianLog: string): Promise<GpuStatePayload> {
-  const [gpuResult, guardian] = await Promise.all([
+/** Compose the GPU page payload (rocm-smi + guardian tail + ComfyUI state). */
+async function readGpuState(
+  guardianLog: string, comfyUrl: string, comfyLogDir: string,
+): Promise<GpuStatePayload> {
+  const [gpuResult, guardian, comfy] = await Promise.all([
     readGpu().then(sample => ({ sample }), (error: unknown) => ({ error: String(error) })),
     readGuardian(guardianLog),
+    readComfyState(comfyUrl, comfyLogDir).catch((error: unknown) => ({
+      up: false, version: null, models: [], running: false, pending: 0,
+      progress: null, workflow: [], vramUsedB: null, vramTotalB: null,
+      error: String(error),
+    })),
   ])
   return {
     gpu: 'sample' in gpuResult ? gpuResult.sample : null,
     ...('error' in gpuResult ? { gpuError: gpuResult.error } : {}),
     guardian,
+    comfy,
     at: new Date().toISOString(),
+  }
+}
+
+/**
+ * Friendly names for the loader classes ComfyUI logs as "Requested to load X".
+ * Ordered: the anchored `$` patterns must be tested before the bare family
+ * names, or `MiniMaxH3TEModel_` would be reported as the video DiT.
+ */
+const COMFY_MODEL_LABELS: ReadonlyArray<readonly [RegExp, string, ComfyModel['kind']]> = [
+  [/TEModel_?$/, 'Qwen3-VL text encoder', 'text'],
+  [/VideoVAE$/, 'H3 video VAE', 'vae'],
+  [/AudioVAE$/, 'H3 audio VAE', 'vae'],
+  [/^MiniMaxH3$/, 'MiniMax H3', 'video'],
+  [/^MiniMaxMusic/, 'MiniMax Music 3', 'audio'],
+  [/^Flux$/, 'Flux', 'image'],
+  [/^AutoencodingEngine$/, 'Flux VAE', 'vae'],
+  [/QwenImage|^Qwen/, 'Qwen-Image', 'image'],
+  [/^Wan.*Video|WanImageToVideo/, 'Wan 2.2', 'video'],
+  [/^LTXV|^LTX/, 'LTX-Video', 'video'],
+  [/^SVD|StableVideo/, 'SVD', 'video'],
+  [/^VoxCPM|^Chatterbox|^Kokoro/, 'TTS', 'audio'],
+]
+
+/** Map one logged loader class to a chip; unmapped classes stay honest. */
+function comfyModel(cls: string): ComfyModel {
+  const clean = cls.replace(/_+$/, '')
+  for (const [re, label, kind] of COMFY_MODEL_LABELS) {
+    if (re.test(clean) || re.test(cls)) return { label, cls: clean, kind }
+  }
+  return { label: clean, cls: clean, kind: 'other' }
+}
+
+/** Newest ComfyUI log file in the given directory, or null. */
+async function newestComfyLog(dir: string): Promise<string | null> {
+  try {
+    const names = (await readdir(dir)).filter(n => n.startsWith('comfyui') && n.endsWith('.log'))
+    let best: { path: string; mtime: number } | null = null
+    for (const n of names) {
+      const full = join(dir, n)
+      try {
+        const info = await stat(full)
+        if (best === null || info.mtimeMs > best.mtime) best = { path: full, mtime: info.mtimeMs }
+      } catch { /* a log that vanished mid-scan is skipped */ }
+    }
+    return best === null ? null : best.path
+  } catch {
+    return null
+  }
+}
+
+/** One GET against ComfyUI, JSON parsed, short timeout. */
+async function comfyGet<T>(url: string, path: string): Promise<T> {
+  const res = await fetch(`${url}${path}`, { signal: AbortSignal.timeout(1500) })
+  if (!res.ok) throw new Error(`ComfyUI ${path} -> HTTP ${res.status}`)
+  return (await res.json()) as T
+}
+
+/**
+ * Read ComfyUI's live state. Everything is local and free: its own HTTP API
+ * for version/VRAM/queue, and a tail of its stdout log for the loader classes
+ * it actually put in VRAM (ComfyUI exposes no "what is loaded" endpoint).
+ * `models` is deliberately emptied when VRAM holds almost nothing, so a stale
+ * log line can never claim a model is resident.
+ */
+async function readComfyState(url: string, logDir: string): Promise<ComfyStatePayload> {
+  const down: ComfyStatePayload = {
+    up: false, version: null, models: [], running: false, pending: 0,
+    progress: null, workflow: [], vramUsedB: null, vramTotalB: null,
+  }
+  let stats: {
+    system?: { comfyui_version?: string }
+    devices?: ReadonlyArray<{ name?: string; vram_total?: number; vram_free?: number }>
+  }
+  let queue: { queue_running?: readonly unknown[]; queue_pending?: readonly unknown[] }
+  try {
+    [stats, queue] = await Promise.all([
+      comfyGet<typeof stats>(url, '/system_stats'),
+      comfyGet<typeof queue>(url, '/queue'),
+    ])
+  } catch (error) {
+    return { ...down, error: String(error) }
+  }
+
+  // ComfyUI lists EVERY device it can see, including an integrated GPU when the
+  // machine has one. An iGPU's pool is shared system RAM and can therefore report
+  // a LARGER total than the discrete card, so "pick the biggest pool" silently
+  // selected the iGPU and the panel showed a different card's numbers (measured on
+  // our rig: 33.5 GB iGPU vs 25.8 GB dGPU). Filter the integrated parts out by
+  // name first, then take the largest remaining pool; if every device looks
+  // integrated, fall back to all of them rather than reporting nothing.
+  const devices = stats.devices ?? []
+  const INTEGRATED = /Graphics\b|UHD|Iris|Vega \d/
+  const discrete = devices.filter(d => !INTEGRATED.test(d.name ?? ''))
+  const candidates = discrete.length > 0 ? discrete : devices
+  let device: { name?: string; vram_total?: number; vram_free?: number } | null = null
+  for (const d of candidates) {
+    if (device === null || (d.vram_total ?? 0) > (device.vram_total ?? 0)) device = d
+  }
+  const total = device?.vram_total ?? null
+  const free = device?.vram_free ?? null
+  const used = total !== null && free !== null ? total - free : null
+
+  const running = (queue.queue_running?.length ?? 0) > 0
+  const pending = queue.queue_pending?.length ?? 0
+
+  // Node classes of the running prompt tell us what kind of work it is.
+  const workflow: string[] = []
+  const first = queue.queue_running?.[0] as readonly unknown[] | undefined
+  if (first !== undefined && typeof first[2] === 'object' && first[2] !== null) {
+    for (const node of Object.values(first[2] as Record<string, { class_type?: string }>)) {
+      const cls = node?.class_type
+      if (typeof cls === 'string' && /Loader|Sampler|VAE|Guider|Scheduler|Encode|Save|ImageToVideo/.test(cls)) {
+        if (!workflow.includes(cls)) workflow.push(cls)
+      }
+    }
+  }
+
+  // Models: the newest log's last loads, but only while they really are in VRAM.
+  let models: ComfyModel[] = []
+  let progress: string | null = null
+  const logPath = await newestComfyLog(logDir)
+  if (logPath !== null) {
+    const text = await readTail(logPath, TAIL_READ_BYTES)
+    if (used === null || used > 1e9) {
+      const loads = [...text.matchAll(/Requested to load ([A-Za-z0-9_]+)/g)].map(m => m[1])
+      const seen = new Set<string>()
+      for (const cls of loads) {
+        const model = comfyModel(cls)
+        if (seen.has(model.cls)) continue
+        seen.add(model.cls)
+        models.push(model)
+      }
+      models = models.slice(-4)
+    }
+    const steps = [...text.matchAll(/(\d+)\/(\d+) \[/g)].pop()
+    if (steps !== undefined && running) progress = `${steps[1]}/${steps[2]}`
+  }
+
+  return {
+    up: true,
+    version: stats.system?.comfyui_version ?? null,
+    models,
+    running,
+    pending,
+    progress,
+    // The panel shows workflow[0], which used to be the loader ("UnetLoaderGGUF") —
+    // accurate but useless for "what is it doing". Put the node that actually defines
+    // the job first (the sampler or the image-to-video stage), then the rest; the
+    // loader stays available in the tooltip.
+    workflow: [
+      ...workflow.filter(c => /Sampler|KSampler|ImageToVideo|ImageToLatent/.test(c)),
+      ...workflow.filter(c => !/Sampler|KSampler|ImageToVideo|ImageToLatent/.test(c)),
+    ].slice(0, 6),
+    vramUsedB: used,
+    vramTotalB: total,
   }
 }
 
@@ -456,14 +627,15 @@ function requireGet(req: IncomingMessage, res: ServerResponse, pathname: string)
  * heartbeat so proxies keep the stream open).
  */
 function handleGpuEvents(
-  req: IncomingMessage, res: ServerResponse, guardianLog: string,
+  req: IncomingMessage, res: ServerResponse,
+  guardianLog: string, comfyUrl: string, comfyLogDir: string,
 ): void {
   sseOpen(res)
   let closed = false
   const push = async (): Promise<void> => {
     if (closed) return
     try {
-      sseSend(res, 'state', await readGpuState(guardianLog))
+      sseSend(res, 'state', await readGpuState(guardianLog, comfyUrl, comfyLogDir))
     } catch {
       // A failed tick is retried on the next interval; the stream stays open.
     }
@@ -696,12 +868,12 @@ function makeHandler(
     try {
       if (pathname === `${API_PREFIX}/gpu`) {
         if (!requireGet(req, res, pathname)) return
-        sendJson(res, 200, await readGpuState(config.guardianLog))
+        sendJson(res, 200, await readGpuState(config.guardianLog, config.comfyUrl, config.comfyLogDir))
         return
       }
       if (pathname === `${API_PREFIX}/gpu/events`) {
         if (!requireGet(req, res, pathname)) return
-        handleGpuEvents(req, res, config.guardianLog)
+        handleGpuEvents(req, res, config.guardianLog, config.comfyUrl, config.comfyLogDir)
         return
       }
       if (pathname === `${API_PREFIX}/notifications`) {
@@ -741,6 +913,8 @@ export function apply(ctx: HostContext, config: HawkHqConfig = {}): void {
     guardianLog: config.guardianLog ?? DEFAULT_GUARDIAN_LOG,
     notificationsFile: config.notificationsFile ?? DEFAULT_NOTIFICATIONS,
     statsDb: config.statsDb ?? DEFAULT_STATS_DB,
+    comfyUrl: config.comfyUrl ?? DEFAULT_COMFY_URL,
+    comfyLogDir: config.comfyLogDir ?? DEFAULT_COMFY_LOG_DIR,
   }
   ctx.effect(
     () => ctx.webServer.register({
@@ -750,5 +924,5 @@ export function apply(ctx: HostContext, config: HawkHqConfig = {}): void {
     }),
     'hawk-hq: API routes',
   )
-  ctx.logger.info(`hawk-hq: serving ${API_PREFIX} (gpu, notifications, stats, version)`)
+  ctx.logger.info(`hawk-hq: serving ${API_PREFIX} (gpu+comfy, notifications, stats, version)`)
 }

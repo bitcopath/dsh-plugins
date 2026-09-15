@@ -1,7 +1,7 @@
 {
   "name": "dsh-client-ui-hawk-hq",
-  "version": "0.1.0",
-  "description": "Out-of-tree dsh plugin: sidebar GPU tracker (AMD/rocm-smi), harness version badge with an update check, and three settings pages — GPU watchdog, notification inbox, and an API spend/token dashboard.",
+  "version": "0.2.0",
+  "description": "Out-of-tree dsh plugin: sidebar GPU tracker (AMD/rocm-smi) with a ComfyUI panel that names the models resident in VRAM, harness version badge with an update check, and three settings pages — GPU watchdog, notification inbox, and an API spend/token dashboard.",
   "type": "module",
   "license": "MIT",
   "keywords": [

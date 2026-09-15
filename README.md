@@ -2,7 +2,8 @@
 
 Out-of-tree plugins for [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh)
 (DeepSeek Harness) that we use every day on a single-GPU Linux workstation: a live
-GPU tracker in the sidebar, a harness version badge with an update check, three extra
+GPU tracker in the sidebar that also names what ComfyUI is holding in VRAM, a
+harness version badge with an update check, three extra
 settings pages, a prompt-template dropdown in the composer, and provider failover for
 the agent loop.
 
@@ -14,12 +15,16 @@ and that patch now re-applies itself.
 
 | Plugin | What it adds |
 |---|---|
-| `dsh-client-ui-hawk-hq` | Sidebar **GPU tracker**, **DSH version badge**, three settings pages (**GPU Watchdog**, **Notifications**, **HQ Dashboard**), the composer **⚡ Skills…** dropdown |
+| `dsh-client-ui-hawk-hq` | Sidebar **GPU tracker** + a **ComfyUI panel** that names the models resident in VRAM, **DSH version badge**, three settings pages (**GPU Watchdog**, **Notifications**, **HQ Dashboard**), the composer **⚡ Skills…** dropdown |
 | `dsh-llm-hawk-failover` | **Provider failover** for the agent loop: quarantine a dead route, walk an ordered chain to a backup |
 
 ![The GPU mini panel in the sidebar foot: junction temperature, the workload holding the card (ComfyUI), the guardian rung, VRAM, utilisation and board power](docs/images/gpu-tracker.png)
 
 *GPU tracker, sidebar foot — one `rocm-smi` sample every 2 s plus a `/proc` scan that names the resident workload. The rung badge comes from an optional guardian log; with no log the panel still renders.*
+
+![The sidebar foot while ComfyUI holds three models: the ComfyUI block above (version, queue state, one chip per resident model, VRAM) and the GPU readout below it](docs/images/comfyui-panel.png)
+
+*ComfyUI block, stacked above the same GPU readout — engine version, queue state (`running 0/8`), one chip per model in VRAM with a colour per kind, the card's own VRAM view, and the node that is actually doing the work. It appears only while ComfyUI is up and something is resident; an idle engine shows nothing at all.*
 
 ![The composer row with the Skills dropdown button](docs/images/composer-skills-button.png)
 
@@ -40,6 +45,31 @@ stream as the settings page (one state event every 5 s).
 - Heat tone follows the guardian ladder: amber from 85 °C, red from 95 °C.
 - **AMD only** — it shells out to `rocm-smi`. On a machine without it the panel shows the
   error string instead of numbers; nothing else in the plugin depends on it.
+
+### ComfyUI panel (same seat, above the GPU readout)
+
+A second block inside the same `sidebar.footer.action` occupant, so the two stack instead
+of laying out side by side. It answers the question the GPU number cannot: **which models
+are loaded, and what is running.**
+
+- **It is invisible unless it has something to say** — ComfyUI must be up *and* a prompt
+  must be executing *or* something must be genuinely resident. An idle engine leaves the
+  sidebar exactly as it was; there is no empty card.
+- **What it shows**: engine version, queue state (`running +N` when prompts wait behind it,
+  with sampling progress such as `4/8`), one **chip per resident model** coloured by kind
+  (video / image / audio / text encoder / VAE), the card's VRAM as ComfyUI sees it, and the
+  node class that defines the job (`SamplerCustomAdvanced`, not `UnetLoaderGGUF` — the
+  loader stays in the tooltip).
+- **How it knows what is loaded**: ComfyUI has no "what is resident" endpoint, so the host
+  half tails its newest stdout log for `Requested to load <class>` lines and maps the loader
+  classes to friendly names. The list is **emptied whenever the card holds almost no
+  memory**, so a stale log line can never claim a model is resident.
+- **The discrete card, not the iGPU**: ComfyUI lists every device it can see, and an
+  integrated GPU's shared pool can report a *larger* total than the discrete card (we
+  measured 33.5 GB iGPU vs 25.8 GB dGPU on one machine), so "pick the biggest pool" showed
+  the wrong card's numbers. Integrated parts are filtered out by name first.
+- ComfyUI is optional: with nothing listening on the port the block reports `up: false` and
+  renders nothing; the GPU panel next to it is unaffected.
 
 ### Settings pages (`settings.section` occupants)
 
@@ -86,11 +116,14 @@ configuration with `$HOME`-relative defaults.
 - Linux, **Node 20+** (we run Node 24.14.1)
 - **`python3`** with the stdlib `sqlite3` module (used by the HQ Dashboard route)
 - **`rocm-smi`** for the GPU surfaces (AMD); everything else works without it
+- **ComfyUI** is optional, for the ComfyUI panel only: its HTTP API (default
+  `http://127.0.0.1:8188`) and a stdout log directory. With neither, the panel stays
+  hidden and nothing else changes.
 - Client-side plugins also need a `dsh` whose browser half declares the seats listed above
   — we test against **`@deepseek-ai/dsh` 0.1.5-rc.1** (and 0.1.1-rc.2 before it)
 
-No API keys, no paid service: every route reads `rocm-smi`, `/proc`, a local file, the local
-SQLite DB, or the public npm registry.
+No API keys, no paid service: every route reads `rocm-smi`, `/proc`, ComfyUI on localhost, a
+local file, the local SQLite DB, or the public npm registry.
 
 ## Install
 
@@ -156,17 +189,21 @@ An install wipes the seat patch. That is why the repo ships the procedure, not j
 
 ## Configuration
 
-The host half takes three optional paths (`HawkHqConfig` in `src/index.ts`); our own profile
-patch sets none of them and relies on the defaults:
+The host half takes five optional settings (`HawkHqConfig` in `src/index.ts`); our own
+profile patch sets none of them and relies on the defaults:
 
 | Key | Default |
 |---|---|
 | `guardianLog` | `$HOME/dsh-hq/logs/gpu-guardian.log` |
 | `notificationsFile` | `$HOME/.dsh/notifications.jsonl` |
 | `statsDb` | `$HOME/dsh-hq/stats.db` |
+| `comfyUrl` | `http://127.0.0.1:8188` |
+| `comfyLogDir` | `$HOME/comfyui/logs` (the newest `comfyui*.log` in it is tailed) |
 
 Pass them in the registration/config row if you keep those files elsewhere, or just leave
-them: a missing file is reported as missing, never as data.
+them: a missing file is reported as missing, never as data. The ComfyUI panel needs both
+ComfyUI keys to be right — point `comfyLogDir` at wherever your ComfyUI stdout log lands, or
+the panel will show the queue and VRAM but no model chips.
 
 ### Stats DB schema (HQ Dashboard)
 
@@ -205,6 +242,10 @@ moved the user turn into a new package, and renamed its CSS-module prefix (`gdEz
   by nature — upstream hard-codes the values with no stable hook, so there is no other way;
   `verify.sh` fails loudly if their targets vanish;
 - the GPU panel assumes **AMD** (`rocm-smi`) and Linux (`/proc`).
+- the ComfyUI panel assumes **ComfyUI's own log wording** (`Requested to load <class>`) and
+  its `/system_stats` + `/queue` shapes. Both have been stable for a long time, but an
+  upstream change would show up as missing model chips rather than an error — the queue,
+  version and VRAM parts would keep working.
 
 ## License
 

@@ -138,6 +138,41 @@ export const CSS_TEXT = `
 .hhq-sk-btn:hover { color: var(--dsw-alias-label-primary, #e6e8ee); }
 .hhq-sk-btn-primary { color: #fff; background: var(--dsw-alias-button-info-fill, #4f8ef7); }
 .hhq-sk-btn-primary:hover { color: #fff; filter: brightness(1.08); }
+/* ComfyUI sidebar panel — stacked above the GPU readout inside the same
+   sidebar.footer.action occupant. Rendered only while the engine is up and
+   something is resident, so an idle machine shows none of these rules. */
+.hhq-comfy {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+}
+.hhq-comfy-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0 2px;
+}
+.hhq-comfy-chip {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  color: var(--dsw-alias-text-secondary, #b8bcc2);
+  white-space: nowrap;
+}
+.hhq-chip-video { border-color: #7c5cff; color: #c3b4ff; }
+.hhq-chip-image { border-color: #2f9e6b; color: #9ee0c0; }
+.hhq-chip-audio { border-color: #c98a1f; color: #f0d091; }
+.hhq-chip-text  { border-color: #4a7fb5; color: #a9cbea; }
+.hhq-chip-vae   { border-color: #6b7076; color: #b8bcc2; }
+.hhq-comfy-wf {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+  opacity: .7;
+}
 `
 
 /** Inject the stylesheet once (deduped by data-plugin-css). */

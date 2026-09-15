@@ -1,15 +1,15 @@
 # dsh-client-ui-hawk-hq
 
 An out-of-tree [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) plugin that
-puts the machine into the UI: a live **GPU tracker** in the sidebar, the running **harness
-version** next to it, three extra **settings pages**, and a **prompt-template dropdown** in
-the composer.
+puts the machine into the UI: a live **GPU tracker** in the sidebar that also names what
+**ComfyUI** is holding in VRAM, the running **harness version** next to it, three extra
+**settings pages**, and a **prompt-template dropdown** in the composer.
 
 Six surfaces, one host half:
 
 | # | Surface | Registered as | Survives `npm i -g` |
 |---|---|---|---|
-| 1 | Sidebar foot **GPU mini panel** | `sidebar.footer.action` (id `hawk-gpu-sidebar`) | yes |
+| 1 | Sidebar foot **GPU mini panel** + **ComfyUI panel** | `sidebar.footer.action` (id `hawk-gpu-sidebar`) | yes |
 | 2 | **DSH version badge** | `sidebar.version` (id `hawk-dsh-version`) | **needs the seat patch** — see below |
 | 3 | Settings → **GPU Watchdog** | `settings.section` (id `hawk-gpu-watchdog`) | yes |
 | 4 | Settings → **Notifications** | `settings.section` (id `hawk-notifications`) | yes |
@@ -23,6 +23,10 @@ sidebar-head spacing is tightened) — see "Fragile by nature" below.
 
 *Sidebar foot: junction temperature, the workload holding the card, the guardian rung, VRAM / utilisation / board power.*
 
+![The ComfyUI block above the same readout](../../docs/images/comfyui-panel.png)
+
+*Sidebar foot while ComfyUI is loaded: engine version, queue state, one chip per resident model, the card's VRAM as ComfyUI sees it, and the node doing the work — stacked above the GPU panel in the same seat occupant.*
+
 ![The composer Skills button](../../docs/images/composer-skills-button.png)
 
 *Composer ⚡ Skills… — pick a template, its text lands in the draft.*
@@ -30,11 +34,12 @@ sidebar-head spacing is tightened) — see "Fragile by nature" below.
 ## Host routes
 
 Everything is served under `/plugin/hawk-hq`. No route calls a paid API; every byte comes
-from `rocm-smi`, `/proc`, a local log/JSONL/SQLite file, or the public npm registry.
+from `rocm-smi`, `/proc`, ComfyUI on localhost, a local log/JSONL/SQLite file, or the public
+npm registry.
 
 | Route | Source | Notes |
 |---|---|---|
-| `GET /plugin/hawk-hq/gpu` | one `rocm-smi --json` sample + guardian log tail | sample cached 2 s |
+| `GET /plugin/hawk-hq/gpu` | one `rocm-smi --json` sample + guardian log tail + ComfyUI state | sample cached 2 s |
 | `GET /plugin/hawk-hq/gpu/events` | the same payload as SSE | one state event / 5 s |
 | `GET /plugin/hawk-hq/notifications` | tail of the notifications JSONL | last 200 rows |
 | `GET /plugin/hawk-hq/notifications/events` | SSE, live appends | |
@@ -57,6 +62,46 @@ The **GPU Watchdog** page shows the same live sample plus the tail of a guardian
 last 50 non-empty lines, with the highest `rung=<n>` found. A missing log is reported as
 `unavailable` — never as an empty-but-healthy card.
 
+## The ComfyUI panel, in detail
+
+The same seat occupant renders a second block **above** the GPU readout, from the `comfy`
+field of the very same `/gpu` payload (no second request, no second SSE stream):
+
+```ts
+interface ComfyStatePayload {
+  up: boolean                 // ComfyUI answered on its HTTP port
+  version: string | null      // comfyui_version from /system_stats
+  models: ComfyModel[]        // resident in VRAM right now, oldest first
+  running: boolean            // /queue has a running prompt
+  pending: number             // prompts queued behind it
+  progress: string | null     // sampling progress of the running prompt, e.g. "4/8"
+  workflow: string[]          // node classes, the job-defining one first
+  vramUsedB: number | null    // the DISCRETE card, as ComfyUI sees it
+  vramTotalB: number | null
+  error?: string              // set when the read failed while ComfyUI was expected
+}
+```
+
+- **Rendered only when it has something to say**: `up && (running || models.length > 0)`.
+  ComfyUI down, or up and idle, renders nothing — no empty card, no permanent furniture.
+- **Model names come from ComfyUI's own log.** It exposes no "what is loaded" endpoint, so
+  the host half tails the newest `comfyui*.log` in `comfyLogDir` for
+  `Requested to load <class>` lines and maps loader classes to friendly names and kinds
+  (`MiniMaxH3TEModel` → *Qwen3-VL text encoder*, kind `text`; `MiniMaxH3VideoVAE` → *H3
+  video VAE*, kind `vae`; `MiniMaxH3` → *MiniMax H3*, kind `video`). Unmapped classes keep
+  their own name rather than being guessed at.
+- **A stale log line can never claim a resident model**: the list is emptied unless the card
+  actually holds more than 1 GB.
+- **The discrete card wins.** ComfyUI lists every device it can see; an integrated GPU's
+  shared pool can report a larger total than the discrete card (measured: 33.5 GB iGPU vs
+  25.8 GB dGPU), so integrated parts (`Radeon Graphics`, `UHD`, `Iris`, `Vega N`) are
+  filtered out by name before the largest pool is taken.
+- **`workflow[0]` is the job, not the loader**: sampler / image-to-video classes sort first,
+  so the line reads `SamplerCustomAdvanced` rather than `UnetLoaderGGUF`. The full node list
+  is in the tooltip.
+- ComfyUI is optional. With nothing listening, `up: false` plus an `error` string comes back
+  and the block simply does not render; the GPU panel beside it is untouched.
+
 ## Configuration
 
 ```ts
@@ -64,12 +109,15 @@ interface HawkHqConfig {
   guardianLog?: string        // default: $HOME/dsh-hq/logs/gpu-guardian.log
   notificationsFile?: string  // default: $HOME/.dsh/notifications.jsonl
   statsDb?: string            // default: $HOME/dsh-hq/stats.db
+  comfyUrl?: string           // default: http://127.0.0.1:8188
+  comfyLogDir?: string        // default: $HOME/comfyui/logs
 }
 ```
 
 Every path is optional and every reader degrades: a missing log or JSONL renders as empty /
 `unavailable`, a missing stats DB surfaces as a **one-line** error on the Dashboard card (e.g.
-`sqlite3.OperationalError: unable to open database file`), and the untruncated error text goes
+`sqlite3.OperationalError: unable to open database file`), a missing ComfyUI log directory or
+an unreachable ComfyUI hides the ComfyUI block, and the untruncated error text goes
 to the harness log. The error body is deliberately short — the host half never returns a
 command dump to the browser. Nothing is ever invented to fill a card.
 
@@ -165,11 +213,12 @@ rename upstream fails loudly in a check instead of quietly in the UI.
 ## Layout
 
 ```
-src/index.ts            host half: routes, rocm-smi//proc/stat reads, version check
+src/index.ts            host half: routes, rocm-smi//proc/stat reads, ComfyUI reads, version check
 src/wire.ts             host↔browser contract (type-only)
 src/semver.ts           dependency-free version comparison, shared by both halves
 src/client/index.ts     slot registrations
 src/client/sidebar.ts   sidebar GPU mini panel      (sidebar.footer.action)
+src/client/comfy.ts     ComfyUI block, stacked above that panel (same occupant)
 src/client/version.ts   version badge               (sidebar.version)
 src/client/dashboard.ts HQ Dashboard                (settings.section)
 src/client/gpu.ts       GPU Watchdog page           (settings.section)

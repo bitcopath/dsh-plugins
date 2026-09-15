@@ -3,13 +3,15 @@
  * sidebar foot's `sidebar.footer.action` list seat — it renders full-width
  * directly above the Settings row. Fed by the
  * same SSE stream as the GPU Watchdog settings page (one state event / 5s).
- * Wide mode shows junction temp + guardian rung + VRAM/util/power; the
- * collapsed 56px rail shrinks to a single heat dot with a tooltip.
+ * Wide mode shows junction temp + guardian rung + VRAM/util/power, with the
+ * ComfyUI block (loaded models + queue) stacked directly above it; the collapsed
+ * 56px rail shrinks to a single heat dot with a tooltip.
  */
 
 import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { GpuStatePayload } from '../wire.ts'
+import { ComfyBlock } from './comfy.ts'
 import { API, fmtUnit } from './util.ts'
 
 /** Owner share of `sidebar.footer.action` (the shell passes column state). */
@@ -63,6 +65,8 @@ export function GpuSidebarWidget({ wide }: SidebarGpuProps): ReactNode {
   const model = gpu.modelName ?? null
 
   return h('div', { className: 'hhq-side' },
+    // ComfyUI sits ABOVE the GPU readout in the same occupant so the two stack.
+    h(ComfyBlock, { comfy: state?.comfy ?? null }),
     h('div', { className: 'hhq-side-head' },
       h('span', { className: 'hhq-side-label' }, 'GPU'),
       h('span', { className: `hhq-side-temp${tone}` }, fmtUnit(junc, 0, '°C')),
