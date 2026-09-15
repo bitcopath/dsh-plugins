@@ -4,8 +4,8 @@ Out-of-tree plugins for [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deep
 (DeepSeek Harness) that we use every day on a single-GPU Linux workstation: a live
 GPU tracker in the sidebar that also names what ComfyUI is holding in VRAM, a
 harness version badge with an update check, three extra
-settings pages, a prompt-template dropdown in the composer, and provider failover for
-the agent loop.
+settings pages, a prompt-template dropdown in the composer, **video, audio and images that play
+inside the chat**, and provider failover for the agent loop.
 
 Everything here is a **plugin occupant or a documented patch of an installed bundle** —
 not a fork. That is the point: `npm i -g @deepseek-ai/dsh@…` replaces the whole package
@@ -16,6 +16,7 @@ and that patch now re-applies itself.
 | Plugin | What it adds |
 |---|---|
 | `dsh-client-ui-hawk-hq` | Sidebar **GPU tracker** + a **ComfyUI panel** that names the models resident in VRAM, **DSH version badge**, three settings pages (**GPU Watchdog**, **Notifications**, **HQ Dashboard**), the composer **⚡ Skills…** dropdown |
+| `dsh-client-ui-hawk-media` | **Video, audio and images play inside the chat** — a native player under the line that names the file, the reference itself as the clickable caption, streamed by a `Range`-capable route because the built-in file route caps at 20 MiB and cannot seek |
 | `dsh-llm-hawk-failover` | **Provider failover** for the agent loop: quarantine a dead route, walk an ordered chain to a backup |
 
 ![The GPU mini panel in the sidebar foot: junction temperature, the workload holding the card (ComfyUI), the guardian rung, VRAM, utilisation and board power](docs/images/gpu-tracker.png)
@@ -97,6 +98,19 @@ A prompt-template dropdown in the composer: pick a template, and its text is ins
 the draft. A `Name = prompt template` editor manages them; they live in `localStorage`
 under `dsh.composer.skills`. The four seeds are examples — replace them with your own.
 
+### Video, audio and images in the chat (`dsh-client-ui-hawk-media`)
+
+A message that names a media file — an absolute path in inline code, a link, or a bare `http(s)`
+URL — gets a **native player right under that line**, and the line it consumed is hidden so the
+reader sees one player with one clickable caption instead of three copies of the same link. Images
+ride the same scan and the same frame minus the transport, which is the one thing the core renderer
+does not give a picture: a label saying which file is on screen.
+
+The bytes are streamed by the plugin's own `Range`-capable route, because the chat's built-in image
+route caps at **20 MiB, buffers the whole file and cannot seek** — a clip therefore could not be
+played by the only route that existed for media. See
+[`plugins/dsh-client-ui-hawk-media/README.md`](plugins/dsh-client-ui-hawk-media/README.md).
+
 ### Provider failover (`dsh-llm-hawk-failover`)
 
 When the primary model route fails with a transport-class error, the route is quarantined
@@ -130,10 +144,12 @@ local file, the local SQLite DB, or the public npm registry.
 ```bash
 git clone https://github.com/bitcopath/dsh-plugins ~/dsh-plugins
 cd ~/dsh-plugins/plugins/dsh-client-ui-hawk-hq && pnpm install && pnpm build
+cd ../dsh-client-ui-hawk-media                  && pnpm install && pnpm build
 cd ../dsh-llm-hawk-failover                 && pnpm install && pnpm build
 
-# register both as profile bundles (one `link:` row each)
+# register all three as profile bundles (one `link:` row each)
 dsh plugin --profile web add link:$HOME/dsh-plugins/plugins/dsh-client-ui-hawk-hq
+dsh plugin --profile web add link:$HOME/dsh-plugins/plugins/dsh-client-ui-hawk-media
 dsh plugin --profile web add link:$HOME/dsh-plugins/plugins/dsh-llm-hawk-failover
 dsh plugin --profile web install
 ```
@@ -141,7 +157,8 @@ dsh plugin --profile web install
 Both packages declare `dsh.bundle.patch`, so adding them appends their bundle to the
 profile's layer stack and the rows mount on the next harness boot. A newly added plugin row
 is only visible to a **new** session/process — restart the web service (we run ours as a
-systemd user unit) and reload the browser.
+systemd user unit) and reload the browser. The media plugin's streaming route is registered by
+the server process, so its first activation needs the same restart.
 
 Finally, add the sidebar seat that carries the version badge:
 

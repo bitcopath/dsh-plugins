@@ -1,0 +1,50 @@
+{
+  "name": "dsh-client-ui-hawk-media",
+  "version": "0.2.0",
+  "description": "Out-of-tree dsh plugin: media player for DSH. (1) In-chat: a video/audio named in a message (path or URL) becomes a native player with controls, right in the conversation. (2) In the right Sidebar: a document-preview type for video (mp4/m4v/webm/mov/ogv) and audio (mp3/m4a/wav/oga/ogg). Bytes are streamed from the plugin's own Range-capable route, because the built-in /api/file refuses anything over the 20 MiB image limit.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "keywords": [
+    "dsh",
+    "plugin",
+    "chat",
+    "sidebar",
+    "document-preview",
+    "video",
+    "inline-player",
+    "hawk"
+  ],
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.12",
+    "tsdown": "^0.15.0",
+    "typescript": "^5.7.2"
+  }
+}

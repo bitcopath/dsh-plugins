@@ -1,0 +1,10 @@
+# The hawk-media bundle patch: mounts the inline media preview type.
+# Declared through `dsh.bundle.patch` in package.json, so
+# `dsh plugin --profile web add link:<this dir>` appends this package to the
+# profile's `dsh.profile.bundles` layer stack and the plugin mounts on the next
+# boot of `dsh web` — no manual profile cordis.patch.yml edit needed.
+# `id` is the cordis plugin id (hawk-media); `name` is the package specifier the
+# loader resolves (the npm package name).
+- insert:
+    - id: hawk-media
+      name: "dsh-client-ui-hawk-media"
