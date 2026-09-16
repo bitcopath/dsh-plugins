@@ -173,6 +173,235 @@ export const CSS_TEXT = `
   max-width: 60%;
   opacity: .7;
 }
+
+/* ── Hawk Radio: compact rail card + its modal ──────────────────────────────
+   The rail card is deliberately two rows: the owner's rule is that the sidebar
+   keeps the smallest thing that is still a radio, and everything else lives in
+   the modal behind the gear. */
+.hhq-side-collapsed { display: inline-flex; align-items: center; gap: 6px; }
+.hhq-radio { gap: 4px; }
+.hhq-radio-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+}
+.hhq-radio-dot-on { color: #6fd08c; }
+.hhq-radio-top { display: flex; align-items: center; gap: 8px; }
+.hhq-radio-play {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: var(--dsw-alias-bg-secondary, #23262c);
+  color: var(--dsw-alias-text-primary, #e6e8ea);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.hhq-radio-play-on { background: #1f3a57; border-color: #2f5a83; color: #cfe6ff; }
+.hhq-radio-title { flex: 1; min-width: 0; }
+.hhq-radio-title b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hhq-radio-title span {
+  display: block;
+  font-size: 10px;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hhq-radio-gear {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: transparent;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+  font-size: 11px;
+  cursor: pointer;
+}
+.hhq-radio-gear:hover { color: var(--dsw-alias-text-primary, #e6e8ea); }
+.hhq-radio-bar {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--dsw-alias-bg-secondary, #2c313a);
+  overflow: hidden;
+}
+.hhq-radio-bar > i { display: block; height: 100%; background: #4a9eff; }
+.hhq-radio-bar-lg { height: 6px; }
+.hhq-radio-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+}
+.hhq-radio-ok { color: #6fd08c; }
+.hhq-radio-down { color: #e2914a; }
+.hhq-radio-busy { color: #9cc7ff; }
+.hhq-radio-stars-mini { color: #f5b942; letter-spacing: 1px; }
+.hhq-radio-error {
+  font-size: 10px;
+  color: #ff9aa2;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the modal */
+.hhq-radio-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, .5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hhq-radio-modal {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-primary, #16181d);
+  color: var(--dsw-alias-text-primary, #e6e8ea);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
+}
+.hhq-radio-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+}
+.hhq-radio-brand { font-size: 11px; letter-spacing: .14em; color: var(--dsw-alias-text-tertiary, #8b9099); }
+.hhq-radio-x {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: transparent;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+  cursor: pointer;
+}
+.hhq-radio-grid { display: flex; gap: 16px; padding: 14px; }
+.hhq-radio-col { flex: 1.15; min-width: 0; }
+.hhq-radio-col-right { flex: 1; border-left: 1px solid var(--dsw-alias-border-secondary, #3a3f45); padding-left: 16px; }
+.hhq-radio-now { font-size: 21px; font-weight: 700; line-height: 1.15; }
+.hhq-radio-sub { font-size: 11.5px; color: var(--dsw-alias-text-tertiary, #8b9099); margin-top: 3px; }
+.hhq-radio-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+.hhq-radio-tag, .hhq-radio-tag-st {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  color: var(--dsw-alias-text-secondary, #b8bcc2);
+}
+.hhq-radio-tag-st { border-color: #5b4bb5; color: #c4b5fd; }
+.hhq-radio-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+  margin-top: 4px;
+}
+.hhq-radio-transport { display: flex; gap: 6px; margin-top: 12px; }
+.hhq-radio-btn {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: var(--dsw-alias-bg-secondary, #23262c);
+  color: var(--dsw-alias-text-primary, #e6e8ea);
+  font-size: 13px;
+  cursor: pointer;
+}
+.hhq-radio-btn:disabled { opacity: .45; cursor: default; }
+.hhq-radio-btn-play { flex: 2; background: #1f3a57; border-color: #2f5a83; color: #cfe6ff; }
+.hhq-radio-btn-stop { color: #ffb4b8; border-color: #5a2d31; background: #2c1e21; font-size: 12px; }
+.hhq-radio-btn-go { flex: 1.2; background: #23406b; border-color: #35618f; color: #d6e9ff; }
+.hhq-radio-rate { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.hhq-radio-lab { font-size: 10.5px; color: var(--dsw-alias-text-tertiary, #8b9099); }
+.hhq-radio-stars { display: inline-flex; }
+.hhq-radio-star {
+  border: none;
+  background: transparent;
+  color: #4b5057;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.hhq-radio-star.on { color: #f5b942; }
+.hhq-radio-chip {
+  font-size: 10.5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: transparent;
+  color: var(--dsw-alias-text-secondary, #b8bcc2);
+  cursor: pointer;
+}
+.hhq-radio-chip-bad { color: #ffb4b8; border-color: #5a2d31; }
+.hhq-radio-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.hhq-radio-sel {
+  flex: 1.3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+}
+.hhq-radio-sel select {
+  flex: 1;
+  padding: 5px 6px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: var(--dsw-alias-bg-secondary, #23262c);
+  color: var(--dsw-alias-text-primary, #e6e8ea);
+  font-size: 11.5px;
+}
+.hhq-radio-hint { font-size: 10px; color: var(--dsw-alias-text-tertiary, #8b9099); margin-top: 6px; }
+.hhq-radio-lyrics { margin-top: 12px; font-size: 11px; color: var(--dsw-alias-text-secondary, #b8bcc2); }
+.hhq-radio-lyrics pre { white-space: pre-wrap; font-size: 11px; opacity: .85; margin: 6px 0 0; }
+.hhq-radio-qi, .hhq-radio-hrow, .hhq-radio-act {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 3px 0;
+  color: var(--dsw-alias-text-secondary, #b8bcc2);
+}
+.hhq-radio-n { width: 14px; text-align: right; color: var(--dsw-alias-text-tertiary, #8b9099); }
+.hhq-radio-qi-t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hhq-radio-qi-d { color: var(--dsw-alias-text-tertiary, #8b9099); }
+.hhq-radio-hrow-s { color: #f5b942; letter-spacing: 1px; }
+.hhq-radio-act { justify-content: space-between; border-top: 1px dashed var(--dsw-alias-border-secondary, #3a3f45); }
+.hhq-radio-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  font-size: 10.5px;
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+}
 `
 
 /** Inject the stylesheet once (deduped by data-plugin-css). */

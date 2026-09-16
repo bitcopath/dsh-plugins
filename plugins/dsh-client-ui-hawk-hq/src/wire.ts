@@ -200,3 +200,59 @@ export interface VersionPayload {
 export interface ErrorResponse {
   readonly error: { readonly code: string; readonly message: string }
 }
+
+/** Health of the renderer on the ai-server. Read-only: nothing here starts or stops it. */
+export interface RadioHealth {
+  /** True when the renderer answered its health route. */
+  readonly up: boolean
+  /** Loaded DiT model name, or null while unknown. */
+  readonly model: string | null
+  /** Jobs the renderer has completed since it started. */
+  readonly jobs: number | null
+  /** Its own average job time in seconds. */
+  readonly avgSeconds: number | null
+  /** Why the renderer could not be reached, when it could not. */
+  readonly error?: string
+}
+
+/** One generated song. The `.mp3` is the truth; this is its sidecar JSON. */
+export interface RadioTrack {
+  readonly id: string
+  /** Human title shown on the card. */
+  readonly title: string
+  /** Station family this was generated for (`rock-classic-metal`, …). */
+  readonly station: string
+  readonly seconds: number
+  readonly bpm: number | null
+  readonly key: string | null
+  readonly lang: string | null
+  /** Renderer seed — enough to reproduce or extend the take exactly. */
+  readonly seed: string | null
+  readonly caption: string | null
+  readonly lyrics: string | null
+  /** 1–5 stars; 0 means unrated. */
+  readonly stars: number
+  /** Hard negative: never play this again (stickier than a low rating). */
+  readonly never: boolean
+  readonly plays: number
+  readonly bytes: number
+  readonly created: string
+}
+
+/** GET /plugin/hawk-hq/radio — everything the compact card and the modal render from. */
+export interface RadioPayload {
+  readonly health: RadioHealth
+  /** Newest first, capped by the host half. */
+  readonly tracks: readonly RadioTrack[]
+  readonly stats: {
+    readonly count: number
+    readonly rated: number
+    readonly never: number
+    readonly starsAvg: number | null
+    readonly bytes: number
+    /** Stations that actually have material, for the station selector. */
+    readonly stations: readonly string[]
+  }
+  /** Stations the renderer can be asked for, from the caption pool. */
+  readonly stations: readonly string[]
+}

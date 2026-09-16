@@ -12,6 +12,7 @@ import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { GpuStatePayload } from '../wire.ts'
 import { ComfyBlock } from './comfy.ts'
+import { RadioBlock } from './radio.ts'
 import { API, fmtUnit } from './util.ts'
 
 /** Owner share of `sidebar.footer.action` (the shell passes column state). */
@@ -46,14 +47,17 @@ export function GpuSidebarWidget({ wide }: SidebarGpuProps): ReactNode {
 
   // Collapsed rail: one heat dot; the tooltip carries the numbers.
   if (!wide) {
-    return h('span', {
-      className: `hhq-side-dot${tone}`,
-      title: junc === null ? 'GPU: no data' : `GPU ${junc.toFixed(0)}°C · rung ${rung ?? '—'}`,
-    })
+    return h('span', { className: 'hhq-side-collapsed' },
+      h(RadioBlock, { wide: false }),
+      h('span', {
+        className: `hhq-side-dot${tone}`,
+        title: junc === null ? 'GPU: no data' : `GPU ${junc.toFixed(0)}°C · rung ${rung ?? '—'}`,
+      }))
   }
 
   if (gpu === null) {
     return h('div', { className: 'hhq-side' },
+      h(RadioBlock, { wide }),
       h('span', { className: 'hhq-side-dim' },
         state === null ? 'GPU connecting…' : 'GPU —'))
   }
@@ -65,6 +69,10 @@ export function GpuSidebarWidget({ wide }: SidebarGpuProps): ReactNode {
   const model = gpu.modelName ?? null
 
   return h('div', { className: 'hhq-side' },
+    // Radio sits ABOVE ComfyUI, which sits above the GPU readout: all three live
+    // in this one occupant because separate occupants in this seat lay out side
+    // by side instead of stacking.
+    h(RadioBlock, { wide }),
     // ComfyUI sits ABOVE the GPU readout in the same occupant so the two stack.
     h(ComfyBlock, { comfy: state?.comfy ?? null }),
     h('div', { className: 'hhq-side-head' },

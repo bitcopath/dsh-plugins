@@ -34,9 +34,12 @@ import type {
   ComfyModel, ComfyStatePayload,
   DailyVolume, ErrorResponse, GpuSample, GpuStatePayload, GuardianState,
   DailySpend, NotificationItem, NotificationsPayload, ProviderStat, QuotaStat, StatsPayload,
-  VersionPayload,
+  RadioPayload, VersionPayload,
 } from './wire.ts'
 import { compareVersions } from './semver.ts'
+import {
+  generateTrack, loadRadioConfig, rateTrack, readJsonBody, readRadioState, serveAudio,
+} from './radio.ts'
 
 export const name = 'hawk-hq'
 
@@ -898,6 +901,52 @@ function makeHandler(
         sendJson(res, 200, await readVersionState())
         return
       }
+      // ── Hawk Radio ────────────────────────────────────────────────────────
+      if (pathname === `${API_PREFIX}/radio`) {
+        if (!requireGet(req, res, pathname)) return
+        sendJson(res, 200, await readRadioState(await loadRadioConfig()))
+        return
+      }
+      if (pathname.startsWith(`${API_PREFIX}/radio/audio/`)) {
+        if (!requireGet(req, res, pathname)) return
+        const cfg = await loadRadioConfig()
+        serveAudio(req, res, cfg.library, decodeURIComponent(pathname.slice(`${API_PREFIX}/radio/audio/`.length)))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/rate`) {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, errorBody('method-not-allowed', 'rate is POST-only'))
+          return
+        }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ id?: string; stars?: number; never?: boolean; played?: boolean }>(req)
+        if (typeof body.id !== 'string' || body.id === '') {
+          sendJson(res, 400, errorBody('bad-request', 'id is required'))
+          return
+        }
+        await rateTrack(cfg, body.id, { stars: body.stars, never: body.never, played: body.played })
+        sendJson(res, 200, await readRadioState(cfg))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/generate`) {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, errorBody('method-not-allowed', 'generate is POST-only'))
+          return
+        }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ station?: string }>(req)
+        const state = await readRadioState(cfg)
+        const station = body.station ?? state.stations[0]
+        if (typeof station !== 'string') {
+          sendJson(res, 400, errorBody('bad-request', 'no station available'))
+          return
+        }
+        // A render occupies the ai-server for a few seconds; the owner asks for it
+        // explicitly, so this is the only place a render can start.
+        await generateTrack(cfg, station, state.tracks)
+        sendJson(res, 200, await readRadioState(cfg))
+        return
+      }
       sendJson(res, 404, errorBody('not-found', `unknown route ${pathname}`))
     } catch (error) {
       ctx.logger.warn(`hawk-hq: ${pathname}: ${String(error)}`)
@@ -924,5 +973,5 @@ export function apply(ctx: HostContext, config: HawkHqConfig = {}): void {
     }),
     'hawk-hq: API routes',
   )
-  ctx.logger.info(`hawk-hq: serving ${API_PREFIX} (gpu+comfy, notifications, stats, version)`)
+  ctx.logger.info(`hawk-hq: serving ${API_PREFIX} (gpu+comfy, notifications, stats, version, radio)`)
 }
