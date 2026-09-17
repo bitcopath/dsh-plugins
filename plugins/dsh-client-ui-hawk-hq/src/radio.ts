@@ -481,9 +481,12 @@ function plannerPrompt(
     'production description: genre, instruments, mood, vocal type, production era — never an',
     'artist name and never a conflicting pair like "lo-fi, hi-fi"), seconds (the length this',
     `song wants, between ${min} and ${max} seconds inclusive -- a punk track is shorter than a`,
-    'ballad, so choose per song and stay inside that band), lyrics (with [Verse] and',
-    '[Chorus] tags, at most 12 short lines total -- shorter answers are better here; if the',
-    'station is instrumental use exactly',
+    'ballad, so choose per song and stay inside that band), lyrics (with [Verse], [Chorus] and',
+    '[Bridge] tags, written out in the order they are sung, and long enough to carry the whole',
+    'song you just chose: about one section per 40 seconds of it, so a 4-minute song wants',
+    'roughly 6 sections and 25-35 short lines, and every [Chorus] is written out again in full',
+    'rather than referred to. Too few lines is the fault to avoid here, because every second the',
+    'lyrics do not cover plays with no words at all. If the station is instrumental use exactly',
     '[Instrumental]), bpm (integer 30-300), key (e.g. "D minor"), lang (ISO code, "none" if',
     'instrumental). Write original words; never quote an existing song.',
   ].join(' ')
@@ -615,7 +618,10 @@ async function planOnce(
       system,
       messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
       temperature: 0.9,
-      maxTokens: 2000,
+      // 2600, not 2000: the prompt now asks for a full song's worth of lyrics (~25-35 lines),
+      // and the one measured truncation failure (turkish-anatolian, 2026-09-17) was the answer
+      // outgrowing its budget. Output tokens are only paid when they are generated.
+      maxTokens: 2600,
     })
     for await (const chunk of stream) {
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
