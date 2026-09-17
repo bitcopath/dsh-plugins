@@ -111,6 +111,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const durationMax = typeof settings.durationMax === 'number' ? settings.durationMax : 0
   const autoBand = durationMin === 0 || durationMax === 0
   const stations = Array.isArray(radio?.stations) ? radio.stations : []
+  /** Only the songs the owner rated five stars — the single list the modal shows. */
+  const fiveStar = tracks.filter(t => t.stars === 5)
   const stats = radio?.stats ?? null
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -477,31 +479,17 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     }, [0, 180, 240, 270, 300, 330, 360].map(v =>
                       h('option', { key: String(v), value: String(v) },
                         v === 0 ? 'auto (station band)' : fmtTime(v)))))),
-                h('div', { className: 'hhq-radio-lab' }, `Up next · ${playable.length} ready`),
-                ...playable.slice(0, 4).map((t, i) => h('div', { key: t.id, className: 'hhq-radio-qi' },
-                  h('span', { className: 'hhq-radio-n' }, String(i + 1)),
-                  h('span', { className: 'hhq-radio-qi-t' }, t.title),
-                  h('span', { className: 'hhq-radio-qi-d' }, fmtTime(t.seconds)))),
-
-                h('div', { className: 'hhq-radio-lab' }, 'History'),
-                ...tracks.filter(t => t.plays > 0 || t.stars > 0).slice(0, 5).map(t => h('div', {
-                  key: t.id, className: 'hhq-radio-hrow',
-                },
-                  h('span', { className: 'hhq-radio-qi-t' }, t.title),
-                  h('span', { className: 'hhq-radio-hrow-s' }, starGlyphs(t.stars)))),
-
-                h('div', { className: 'hhq-radio-lab' }, 'Learning'),
-                h('div', { className: 'hhq-radio-act' },
-                  h('span', null, 'Train on my 4★+ tracks'),
-                  h('span', { className: 'hhq-radio-chip' }, `${tracks.filter(t => t.stars >= 4).length} songs · needs GPU`)),
-                h('div', { className: 'hhq-radio-act' },
-                  h('span', null, 'Songs I turned off for good'),
-                  h('span', { className: 'hhq-radio-chip' }, String(stats?.never ?? 0))),
-                h('div', { className: 'hhq-radio-act' },
-                  h('span', null, 'Library'),
-                  h('span', { className: 'hhq-radio-chip' },
-                    `${stats?.count ?? 0} songs · ${fmtGiB(stats?.bytes ?? 0)}`)))),
-
+                // Owner, 2026-09-17: the queue list, the learning block and every non-five-star
+                // history entry were cut from this modal. What remains is the one list he asked
+                // for -- the songs he gave five stars -- and nothing else.
+                ...fiveStar.length > 0
+                  ? [
+                      h('div', { className: 'hhq-radio-lab' }, `Five stars · ${fiveStar.length}`),
+                      ...fiveStar.slice(0, 10).map(t => h('div', { key: t.id, className: 'hhq-radio-hrow' },
+                        h('span', { className: 'hhq-radio-qi-t' }, t.title),
+                        h('span', { className: 'hhq-radio-hrow-s' }, starGlyphs(5)))),
+                    ]
+                  : [])),
             h('div', { className: 'hhq-radio-foot' },
               h('span', null, health?.up === true
                 ? `ai-server · ${health.jobs ?? 0} jobs · ${health.avgSeconds === null ? '—' : `${health.avgSeconds.toFixed(1)}s`} avg`
