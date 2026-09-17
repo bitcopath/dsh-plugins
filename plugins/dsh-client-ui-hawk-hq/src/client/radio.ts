@@ -126,9 +126,13 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // advance to when the song ended, and the radio went off air mid-session. Reserved songs therefore
   // stay in the session's own chain of songs, while the "ready" count excludes them (the radio has
   // nothing ready any more — the song is reserved).
+  // `currentId` is part of the test on purpose: after a page refresh `sessionWrites` is empty but a
+  // song may be playing, and a playing song must always be able to reach its successor — otherwise
+  // the first refresh mid-session would strand the radio on the song that happened to be playing.
+  const inSession = (id: string): boolean => sessionWrites.current.has(id) || id === currentId
   const playable = tracks.filter(t =>
     (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true
-    && (t.stars === 0 || (sessionWrites.current.has(t.id) && !played.current.has(t.id))))
+    && (t.stars === 0 || (inSession(t.id) && !played.current.has(t.id))))
   /** How many songs are actually available to the ROTATION — reserved ones do not count. */
   const ready = playable.filter(t => t.stars === 0).length
 
@@ -142,7 +146,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
    * exactly one song ahead, never more). A song deleted by the sweep is gone from `tracks`, so it
    * drops out of this list by itself.
    */
-  const queued = playable.filter(t => sessionWrites.current.has(t.id) && t.id !== currentId)
+  const queued = playable.filter(t => inSession(t.id) && t.id !== currentId)
   const settings = radio?.settings ?? { planner: '', musicModel: '', durationMin: 0, durationMax: 0 }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
   const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
