@@ -64,6 +64,8 @@ async function post(path: string, body: unknown): Promise<void> {
  */
 export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const audio = useRef<HTMLAudioElement | null>(null)
+  /** Ids this browser session generated — the rotation fallback for an older host half. */
+  const sessionWrites = useRef<Set<string>>(new Set())
   const [radio, setRadio] = useState<RadioPayload | null>(null)
   const [models, setModels] = useState<{ planners: readonly ModelChoice[]; music: readonly ModelChoice[] } | null>(null)
   const [currentId, setCurrentId] = useState<string | null>(null)
@@ -86,7 +88,12 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // Only songs the radio itself wrote are in rotation. Everything else in the library is
   // material for later (films, ads, product videos) -- playing it here would make this a
   // music player, and that is a deliberately separate product (owner, 2026-09-17).
-  const playable = tracks.filter(t => t.radio === true && t.never !== true)
+  //
+  // `sessionWrites` covers the window where this client is newer than its host: the old host
+  // does not emit the `radio` marker yet, so the ids this browser generated are treated as
+  // radio songs until the restart lands. Library material never qualifies either way.
+  const playable = tracks.filter(t =>
+    (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true)
   const settings = radio?.settings ?? { planner: '', musicModel: '' }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
   const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
@@ -135,14 +142,23 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   /** Write one track for `forStation` — the only place a render can start. */
   const write = useCallback(async (forStation: string, count = 1): Promise<boolean> => {
     try {
+      const known = new Set(tracks.map(t => t.id))
       await post('generate', { station: forStation, count })
-      await refresh()
+      // Fetch the result here rather than through refresh(): the ids that just appeared are
+      // what marks them as radio songs when the host cannot do it yet.
+      const res = await fetch(`${API}/radio`)
+      const payload = await res.json() as RadioPayload
+      for (const track of Array.isArray(payload.tracks) ? payload.tracks : []) {
+        if (!known.has(track.id)) sessionWrites.current.add(track.id)
+      }
+      setRadio(payload)
+      setError(null)
       return true
     } catch (err) {
       setError(String(err).slice(0, 160))
       return false
     }
-  }, [refresh])
+  }, [tracks])
 
   /** Step to the next track: newest-first order, skipping anything marked never. */
   const step = useCallback((delta: number): void => {
