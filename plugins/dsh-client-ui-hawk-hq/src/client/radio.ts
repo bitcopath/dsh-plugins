@@ -115,6 +115,9 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // radio songs until the restart lands. Library material never qualifies either way.
   const playable = tracks.filter(t =>
     (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true)
+
+  /** The queue: songs this session wrote, not heard yet, not playing now (owner's rule 2026-09-17). */
+  const queued = playable.filter(t => sessionWrites.current.has(t.id) && t.id !== currentId)
   const settings = radio?.settings ?? { planner: '', musicModel: '', durationMin: 0, durationMax: 0 }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
   const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
@@ -165,6 +168,14 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     }
   }, [refresh])
 
+  /** Radio means radio: swept on advance and on going off air; five stars survive (owner's rule). */
+  const prune = useCallback(async (keep: readonly string[]): Promise<void> => {
+    try {
+      await post('prune', { keep })
+      await refresh()
+    } catch { /* old host half: nothing is swept, nothing breaks */ }
+  }, [refresh])
+
   /** Write one track for `forStation` — the only place a render can start. */
   const write = useCallback(async (forStation: string, count = 1): Promise<boolean> => {
     try {
@@ -190,13 +201,16 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const step = useCallback((delta: number): void => {
     if (playable.length === 0) return
     const index = currentId === null ? -1 : playable.findIndex(t => t.id === currentId)
-    const next = playable[(index + delta + playable.length + 1) % playable.length]
+    const next = delta > 0
+      ? (queued[0] ?? playable[(index + delta + playable.length + 1) % playable.length])
+      : playable[(index + delta + playable.length + 1) % playable.length]
     if (next) {
       setCurrentId(next.id)
       setPos(0)
       void post('rate', { id: next.id, played: true }).catch(() => undefined)
+      void prune([next.id])
     }
-  }, [currentId, playable])
+  }, [currentId, playable, queued, prune])
 
   // Point the audio element at the current track; play only when asked, because
   // autoplay without a gesture is blocked by the browser anyway.
@@ -255,7 +269,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // After a cold start, auto-play the first track that arrived.
   useEffect(() => {
     if (!goingLive) return
-    const first = playable[0]
+    const first = queued[0] ?? playable[0]
     if (first === undefined) return
     setCurrentId(first.id)
     wantPlay.current = true
@@ -270,9 +284,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
    */
   const ensureAhead = useCallback((): void => {
     if (busy !== null) return
-    const index = playable.findIndex(t => t.id === currentId)
-    const ahead = index < 0 ? playable.length : playable.length - index - 1
-    if (ahead >= 1) return
+    if (queued.length >= 1) return
     setBusy('writing the next song…')
     void write(current?.station ?? station).finally(() => setBusy(null))
   }, [busy, playable, currentId, current, station, write])
@@ -319,14 +331,10 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     if (lockLeft > 0) return
     const el = audio.current
     if (el === null) return
-    if (current === null && playable.length === 0) { lock(); void goLive(); return }
-    if (current === null && playable.length > 0) {
-      lock(); wantPlay.current = true; setCurrentId(playable[0]!.id)
-      window.setTimeout(() => { void el.play().catch(() => setError('playback blocked')) }, 60)
-      return
-    }
-    lock(); wantPlay.current = true; void el.play().catch(() => setError('playback blocked'))
-  }, [lockLeft, current, playable, goLive, lock])
+    lock()
+    wantPlay.current = true
+    void goLive()
+  }, [lockLeft, goLive, lock])
 
   /** Off air: stop immediately, as the owner asked. */
   const goOffAir = useCallback((): void => {
@@ -335,7 +343,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     wantPlay.current = false
     audio.current?.pause()
     setPlaying(false)
-  }, [lockLeft, lock])
+    void prune([])
+  }, [lockLeft, lock, prune])
 
   const rate = useCallback(async (stars: number): Promise<void> => {
     if (current === null) return
@@ -505,7 +514,12 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     type: 'button',
                     className: 'hhq-radio-btn hhq-radio-btn-stop',
                     title: 'Pause the radio. A render already under way finishes; nothing new starts.',
-                    onClick: () => { wantPlay.current = false; audio.current?.pause(); setPlaying(false) },
+                    onClick: () => {
+                      wantPlay.current = false
+                      audio.current?.pause()
+                      setPlaying(false)
+                      void prune([])
+                    },
                   }, '■ Stop')),
 
                 h('div', { className: 'hhq-radio-rate' },

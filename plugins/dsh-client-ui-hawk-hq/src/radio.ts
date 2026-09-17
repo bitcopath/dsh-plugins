@@ -17,7 +17,7 @@
  */
 
 import { createReadStream } from 'node:fs'
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -861,6 +861,48 @@ function pick<T>(list: readonly T[], used: ReadonlySet<string>, keyOf: (item: T)
   const free = list.filter(item => !used.has(keyOf(item)))
   const pool = free.length > 0 ? free : list
   return pool[Math.floor(Math.random() * pool.length)]!
+}
+
+/**
+ * Radio means radio: you listen to it and it is gone (owner's rule, 2026-09-17).
+ *
+ * Delete every song the radio itself wrote that the owner has NOT given five stars, except the ids in
+ * `keep` — normally the one that is playing right now. Five-star songs are the only permanent
+ * residents of the library; without this, a month of listening becomes a thousand files.
+ *
+ * Failure is silent by design: a song that will not delete is a song that stays, and that must never
+ * break playback. A render in flight is skipped by construction — the renderer writes the mp3 first
+ * and the sidecar last, and this function only ever looks at sidecars.
+ */
+export async function pruneUnstarred(cfg: RadioConfig, keep: readonly string[] = []): Promise<string[]> {
+  const keepSet = new Set(keep)
+  const removed: string[] = []
+  let entries: string[]
+  try {
+    entries = await readdir(cfg.library)
+  } catch {
+    return removed
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue
+    const id = name.slice(0, -'.json'.length)
+    if (keepSet.has(id)) continue
+    let meta: Record<string, unknown>
+    try {
+      meta = JSON.parse(await readFile(join(cfg.library, name), 'utf8')) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    if (meta.radio !== true) continue
+    if (typeof meta.stars === 'number' && meta.stars >= 5) continue
+    for (const ext of ['.json', '.mp3']) {
+      try {
+        await unlink(join(cfg.library, id + ext))
+      } catch { /* already gone */ }
+    }
+    removed.push(id)
+  }
+  return removed
 }
 
 /** Update a track's rating; `never` is a separate, stickier signal than low stars. */

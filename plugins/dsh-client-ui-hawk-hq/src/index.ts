@@ -38,7 +38,7 @@ import type {
 } from './wire.ts'
 import { compareVersions } from './semver.ts'
 import {
-  effectivePlanner, generateTrack, loadRadioConfig, rateTrack, readJsonBody, readModelCatalogue,
+  effectivePlanner, generateTrack, loadRadioConfig, pruneUnstarred, rateTrack, readJsonBody, readModelCatalogue,
   readRadioState, renderOnce, revokeTrack, saveRadioSettings, serveAudio, shareTrack,
 } from './radio.ts'
 import type { LlmFace } from './radio.ts'
@@ -936,6 +936,18 @@ function makeHandler(
         }
         await rateTrack(cfg, body.id, { stars: body.stars, never: body.never, played: body.played })
         sendJson(res, 200, await readRadioState(cfg))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/prune`) {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, errorBody('method-not-allowed', 'prune is POST-only'))
+          return
+        }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ keep?: readonly string[] }>(req)
+        const keep = Array.isArray(body.keep) ? body.keep.filter(k => typeof k === 'string') : []
+        const pruned = await pruneUnstarred(cfg, keep)
+        sendJson(res, 200, { ...(await readRadioState(cfg)), pruned })
         return
       }
       if (pathname === `${API_PREFIX}/radio/models`) {
