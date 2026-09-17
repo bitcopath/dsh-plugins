@@ -292,6 +292,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
         ? `${station} · writing the first song…`
         : `${station} · press play to go on air`)
     : `${current.station}${current.bpm === null ? '' : ` · ${current.bpm} BPM`}${current.key === null ? '' : ` · ${current.key}`}`
+      + ((current.lyrics ?? '').trim() === '[Instrumental]' ? ' · words: none' : ' · words: planner')
 
   return h('div', { className: 'hhq-side hhq-radio' },
     h('audio', {
@@ -339,7 +340,14 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
         ? h('span', { className: 'hhq-radio-busy' }, busy)
         : h('span', { className: health?.up === true ? 'hhq-radio-ok' : 'hhq-radio-down' },
             health?.up === true ? `● ${playable.length} ready` : '● renderer down'),
-      h('span', { className: 'hhq-radio-stars-mini' }, starGlyphs(current?.stars ?? 0))),
+      h('span', { className: 'hhq-radio-stars-mini', title: 'Rate this song' },
+        [1, 2, 3, 4, 5].map(n => h('button', {
+          key: n,
+          type: 'button',
+          className: `hhq-radio-star${(current?.stars ?? 0) >= n ? ' on' : ''}`,
+          onClick: () => { void rate(n) },
+          title: `${n} star${n === 1 ? '' : 's'}`,
+        }, '★')))),
 
     error !== null
       ? h('div', { className: 'hhq-radio-error', onClick: () => setError(null) }, error)
