@@ -267,6 +267,14 @@ ahead, never more.
 They are deliberately separate: a music model cannot write words, and an LLM
 cannot make sound.
 
+![The Hawk Radio card in the sidebar, on air](../../docs/images/radio-card-on-air.png)
+
+*The compact card: the song that is playing, where it is, and how many songs are ready ahead of it.*
+
+![The modal while a song plays and the next one is written](../../docs/images/radio-modal-writing-next.png)
+
+*The modal: the two model pickers, the song and its transport, the Reserve (star) action and the share chip — with `writing the next song…` underneath, which is the one-ahead rule at work.*
+
 ### Two folders, one pipeline (star means reserve)
 
 The star on a song is **not** a rating — it is a **reservation**. Starring a song that is
@@ -292,6 +300,10 @@ when the song ends:
   reserved copy is therefore still playable and shareable after its live copy is gone.
 - Rotation is **newest-first, never wrapping**: songs the session has already played do not come
   back, and `never` marks a hard negative.
+
+![The Starred list, one row per reserved song, each with its own share action](../../docs/images/radio-starred-list.png)
+
+*The **Starred** list: what you reserved, each row a share target with its own ✕ to unstar (which deletes the reserved copy).*
 
 ### Silence without stopping
 

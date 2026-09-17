@@ -114,6 +114,14 @@ played by the only route that existed for media. See
 
 ### Hawk Radio — a station whose songs do not exist yet
 
+![The Hawk Radio card in the sidebar, on air](docs/images/radio-card-on-air.png)
+
+*The card on air: the song that is playing, its position, and `2 ready` — the next song is already written.*
+
+![The Hawk Radio modal: a song playing while the next one is written](docs/images/radio-modal-writing-next.png)
+
+*The modal: planner and music model at the top, the song and its transport below, and `writing the next song…` — the one-ahead rule, visible.*
+
 A compact card in the sidebar (above the GPU cards) with the detail in a modal: press play and the
 radio goes on air. A **planner** — any text model the harness already has configured — writes the
 title, caption, lyrics, BPM/key and length; a **music model** (ACE-Step) renders the audio; the next
@@ -135,6 +143,14 @@ radio goes off air, the sweep deletes the live copy and the reserved copy is wha
 and sharing resolve the reserved folder first, so a starred song keeps playing and keeps its link
 after its live copy is gone. A **silence switch** mutes the output for a phone call while the radio
 keeps running — position, advance and the one-song-ahead write all continue, which a pause would not.
+
+![The Starred list: one row per reserved song, each a share target](docs/images/radio-starred-list.png)
+
+*What you kept: one row per reserved song, each with its own share action.*
+
+![The page a shared link opens](docs/images/radio-shared-song.png)
+
+*What a shared song looks like to whoever opens the link.*
 
 Nothing here needs a paid model: the planner is a model you already configured, and the renderer is
 your own machine. Details, routes and configuration: [`plugins/dsh-client-ui-hawk-hq/README.md`](plugins/dsh-client-ui-hawk-hq/README.md).
