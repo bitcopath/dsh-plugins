@@ -83,6 +83,40 @@ const STATION_TEMPO: Readonly<Record<string, { readonly bpm: readonly [number, n
   'rocknroll-50s-rnb': { bpm: [140, 180], keys: ['C major', 'G major', 'A major', 'E major'] },
 }
 
+/**
+ * Song-length bands per station, in seconds.
+ *
+ * Researched 2026-09-17 (`docs/06-song-length-research.md`): the mainstream band is two to
+ * five minutes (nearly 90% of streaming activity), and each genre clusters around its own
+ * centre — punk near 3:22, hard rock near 4:35, thrash near 4:57, progressive rock near 5:21.
+ * A single global band would therefore be wrong for exactly the genres this radio plays.
+ *
+ * Rows marked "estimate" have no published survey row behind them; they are extrapolated from
+ * neighbouring genres and are labelled rather than dressed up as data.
+ */
+const STATION_LENGTH: Readonly<Record<string, readonly [number, number]>> = {
+  // classic rock 4:17 / hard rock 4:35 / metal 4:28 / thrash 4:57
+  'rock-classic-metal': [210, 330],
+  // pop 3:40 / dance pop 3:49 / disco 4:21 / house 4:07
+  'dance-pop': [165, 255],
+  // hip hop 3:52 / rap 3:33 / gangster rap 3:57
+  'hiphop-90s': [180, 255],
+  // 45 RPM singles of the era ran about 2:00-2:30; the survey has no rockabilly row (estimate)
+  'rocknroll-50s-rnb': [120, 195],
+  // Anatolian rock has no survey row; rock 4:12 and folk 3:46 bracket it (estimate)
+  'turkish-anatolian': [180, 300],
+  // turku/saz material is folk 3:46 leaning long (estimate)
+  'turkish-folk-acoustic': [180, 300],
+  // vocal jazz 3:24 / jazz 3:47
+  'jazz-vocal-standards': [150, 240],
+  // flamenco 3:32 / latin and son lean long (estimate)
+  'latin-rumba-son': [180, 270],
+  // pop 3:40 with ballad outliers (estimate)
+  'melodic-pop-multilingual': [180, 255],
+  // classical 3:40 / orchestral 3:11, but concert pieces vary enormously (estimate)
+  'classical-operatic': [180, 360],
+}
+
 /** Title word pools, one per station, so generated songs get names rather than UUIDs. */
 const TITLE_POOL: Readonly<Record<string, readonly string[]>> = {
   'rock-classic-metal': ['Iron Sky', 'Broken Radio', 'Last Highway', 'Cold Thunder', 'Burning Mile', 'Black River', 'Neon Dust', 'Hard Rain'],
@@ -104,9 +138,9 @@ export interface RadioConfig {
   /** Selected renderer model id (ACE-Step); empty means the server default. */
   readonly musicModel: string
   /**
-   * Song length BAND. The planner picks the length of each song inside these bounds
-   * (owner, 2026-09-17: "no length default, we'll put min-max and the song planner will pick
-   * the length as it will write the song, it will stay in min-max boundaries only").
+   * Optional GLOBAL length override. 0/0 means "use the station's own band" (STATION_LENGTH),
+   * which is the default: the owner's rule is that the planner picks inside a band, and the
+   * research says the band differs by genre (punk 3:22 vs progressive rock 5:21).
    */
   readonly durationMin: number
   readonly durationMax: number
@@ -129,12 +163,15 @@ export async function loadRadioConfig(): Promise<RadioConfig> {
     planner: pick('HAWK_RADIO_PLANNER', 'planner', ''),
     musicModel: pick('HAWK_RADIO_MUSIC_MODEL', 'musicModel', ''),
     ...(() => {
-      const clamp = (v: unknown, fallback: number): number => {
+      const clamp = (v: unknown, fallback: number, allowZero = false): number => {
         const n = Number(v)
+        if (allowZero && n === 0) return 0
         return Number.isFinite(n) && n >= 10 && n <= 600 ? Math.round(n) : fallback
       }
-      const min = clamp(process.env.HAWK_RADIO_DURATION_MIN ?? file.durationMin, 90)
-      const max = clamp(process.env.HAWK_RADIO_DURATION_MAX ?? file.durationMax, 210)
+      // 0 means "no override" -- the station band applies instead.
+      const min = clamp(process.env.HAWK_RADIO_DURATION_MIN ?? file.durationMin, 0, true)
+      const max = clamp(process.env.HAWK_RADIO_DURATION_MAX ?? file.durationMax, 0, true)
+      if (min === 0 || max === 0) return { durationMin: 0, durationMax: 0 }
       // A band is only a band if it is the right way round; swap rather than refuse.
       return min <= max ? { durationMin: min, durationMax: max } : { durationMin: max, durationMax: min }
     })(),
@@ -412,7 +449,10 @@ export async function planSong(
   const [provider, ...rest] = cfg.planner.split(':')
   const model = rest.join(':')
   if (!provider || model === '') return null
-  const { system, user } = plannerPrompt(station, avoid, cfg.durationMin, cfg.durationMax)
+  const [pMin, pMax] = cfg.durationMin > 0 && cfg.durationMax > 0
+    ? [cfg.durationMin, cfg.durationMax]
+    : (STATION_LENGTH[station] ?? [180, 270])
+  const { system, user } = plannerPrompt(station, avoid, pMin, pMax)
   try {
     let text = ''
     const stream = llm.stream({
@@ -640,9 +680,12 @@ export async function generateTrack(
 
   // Length: the planner chooses inside the owner's band; without a planner the band is still
   // honoured (a random point in it), so songs vary even while the planner is dormant.
+  const [bandMin, bandMax] = cfg.durationMin > 0 && cfg.durationMax > 0
+    ? [cfg.durationMin, cfg.durationMax]
+    : (STATION_LENGTH[station] ?? [180, 270])
   const seconds = planned !== null && planned.seconds > 0
-    ? Math.min(cfg.durationMax, Math.max(cfg.durationMin, planned.seconds))
-    : cfg.durationMin + Math.floor(Math.random() * (cfg.durationMax - cfg.durationMin + 1))
+    ? Math.min(bandMax, Math.max(bandMin, planned.seconds))
+    : bandMin + Math.floor(Math.random() * (bandMax - bandMin + 1))
 
   const submitted = await acePost<{ task_id: string }>(cfg, '/release_task', {
     prompt: captionWithTempo,

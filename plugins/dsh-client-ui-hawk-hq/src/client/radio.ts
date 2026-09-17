@@ -104,11 +104,12 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // radio songs until the restart lands. Library material never qualifies either way.
   const playable = tracks.filter(t =>
     (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true)
-  const settings = radio?.settings ?? { planner: '', musicModel: '', durationMin: 90, durationMax: 210 }
+  const settings = radio?.settings ?? { planner: '', musicModel: '', durationMin: 0, durationMax: 0 }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
   const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
-  const durationMin = typeof settings.durationMin === 'number' ? settings.durationMin : 90
-  const durationMax = typeof settings.durationMax === 'number' ? settings.durationMax : 210
+  const durationMin = typeof settings.durationMin === 'number' ? settings.durationMin : 0
+  const durationMax = typeof settings.durationMax === 'number' ? settings.durationMax : 0
+  const autoBand = durationMin === 0 || durationMax === 0
   const stations = Array.isArray(radio?.stations) ? radio.stations : []
   const stats = radio?.stats ?? null
 
@@ -443,26 +444,31 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
 
               h('div', { className: 'hhq-radio-col hhq-radio-col-right' },
                 h('div', { className: 'hhq-radio-lab' },
-                  `Song length · the planner picks inside ${fmtTime(durationMin)}–${fmtTime(durationMax)}`),
+                  autoBand
+                    ? `Song length · ${station} band, the planner picks inside it`
+                    : `Song length · global override ${fmtTime(durationMin)}–${fmtTime(durationMax)}`),
                 h('div', { className: 'hhq-radio-row' },
                   h('div', { className: 'hhq-radio-sel' }, 'min',
                     h('select', {
-                      value: String(durationMin),
+                      value: autoBand ? '0' : String(durationMin),
                       onChange: (event: ChangeEvent<HTMLSelectElement>) => {
                         const v = Number(event.target.value)
                         void choose(v > durationMax ? { durationMin: v, durationMax: v } : { durationMin: v })
                       },
-                    }, [45, 60, 90, 120, 150, 180, 240].map(v =>
-                      h('option', { key: String(v), value: String(v) }, fmtTime(v))))),
+                    }, [0, 120, 150, 180, 210, 240, 300].map(v =>
+                      h('option', { key: String(v), value: String(v) },
+                        v === 0 ? 'auto (station band)' : fmtTime(v))))),
                   h('div', { className: 'hhq-radio-sel' }, 'max',
                     h('select', {
-                      value: String(durationMax),
+                      value: autoBand ? '0' : String(durationMax),
                       onChange: (event: ChangeEvent<HTMLSelectElement>) => {
                         const v = Number(event.target.value)
+                        if (v === 0) { void choose({ durationMin: 0, durationMax: 0 }); return }
                         void choose(v < durationMin ? { durationMin: v, durationMax: v } : { durationMax: v })
                       },
-                    }, [60, 90, 120, 150, 180, 240, 300].map(v =>
-                      h('option', { key: String(v), value: String(v) }, fmtTime(v)))))),
+                    }, [0, 180, 240, 270, 300, 330, 360].map(v =>
+                      h('option', { key: String(v), value: String(v) },
+                        v === 0 ? 'auto (station band)' : fmtTime(v)))))),
                 h('div', { className: 'hhq-radio-lab' }, `Up next · ${playable.length} ready`),
                 ...playable.slice(0, 4).map((t, i) => h('div', { key: t.id, className: 'hhq-radio-qi' },
                   h('span', { className: 'hhq-radio-n' }, String(i + 1)),
