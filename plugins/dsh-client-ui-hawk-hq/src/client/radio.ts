@@ -271,6 +271,29 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     void write(current?.station ?? station).finally(() => setBusy(null))
   }, [busy, playable, currentId, current, station, write])
 
+/**
+   * On-air watchdog.
+   *
+   * The owner's rule is absolute: "once I press play it plays until I stop." The advance itself is
+   * verified (firing `ended` moves the card from one song to the next), but the RESUME could not be
+   * observed from my test browser — Chrome suspends media in a hidden tab — and a fix I cannot see
+   * working is a guess. So this does not rely on any single event being delivered in the right
+   * order: every 2 seconds, if the owner has asked for radio and the element is sitting paused
+   * mid-song, it presses play again.
+   *
+   * It cannot fight the owner: pausing or stopping clears the intent first.
+   */
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const el = audio.current
+      if (el === null || !wantPlay.current) return
+      if (current === null) return
+      const atEnd = el.duration > 0 && el.currentTime > 0 && el.currentTime >= el.duration - 0.5
+      if (el.paused && !atEnd) void el.play().catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [current])
+
   const rate = useCallback(async (stars: number): Promise<void> => {
     if (current === null) return
     try { await post('rate', { id: current.id, stars }) } catch (err) { setError(String(err).slice(0, 120)) }
