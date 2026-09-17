@@ -692,9 +692,13 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     id === null ? undefined
                       : id === current?.id ? current?.shareUrl
                         : starred.find(t => t.id === id)?.shareUrl
-                  const linkId = (shareId !== null && shareOf(shareId) !== undefined ? shareId : null)
-                    ?? (current?.shareUrl !== undefined ? current.id : null)
-                    ?? starred.find(t => t.shareUrl !== undefined)?.id ?? null
+                  // Deliberately NO "first reserved row that happens to have a link" fallback: the
+                  // owner saw exactly that on 2026-09-17 — the modal showed the link of a reserved
+                  // song while a different song was playing. The block names one song and only one:
+                  // the row he just shared, or the song on air once it has a link.
+                  const linkId = shareId !== null && shareOf(shareId) !== undefined
+                    ? shareId
+                    : (current?.shareUrl !== undefined ? current.id : null)
                   const link = shareOf(linkId)
                   if (link === undefined) return null
                   return h('div', { className: 'hhq-radio-share' },
