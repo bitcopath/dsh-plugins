@@ -262,6 +262,8 @@ export interface RadioPayload {
   }
   /** Stations the renderer can be asked for, from the caption pool. */
   readonly stations: readonly string[]
+  /** Why the last planner attempt failed, when it did — a silent fallback is a bug. */
+  readonly plannerError?: string | null
   /** The owner's current model selections, so the dropdowns open on the real values. */
   readonly settings: {
     readonly planner: string

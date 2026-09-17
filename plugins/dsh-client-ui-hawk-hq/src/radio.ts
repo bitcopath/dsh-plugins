@@ -235,10 +235,40 @@ export interface ModelChoice {
  * that knows what is actually installed on that box — XL shows up the day it
  * lands, with no change here.
  */
-export async function readModelCatalogue(cfg: RadioConfig): Promise<{
+export async function readModelCatalogue(cfg: RadioConfig, llm: LlmFace | null = null): Promise<{
   planners: readonly ModelChoice[]; music: readonly ModelChoice[]
 }> {
   const planners: ModelChoice[] = []
+
+  // Preferred source: the harness itself. Its provider ids are NOT derivable from the config
+  // keys (the `llm-deepseek` key registers the route "deepseek-official"), and guessing produced
+  // a planner that silently fell back to the pools.
+  if (llm !== null && typeof llm.listModels === 'function') {
+    try {
+      const rawProviders = (typeof llm.listConfigurableProviders === 'function'
+        ? await Promise.resolve(llm.listConfigurableProviders())
+        : (typeof llm.listProviders === 'function' ? await Promise.resolve(llm.listProviders()) : []))
+      const list = Array.isArray(rawProviders) ? rawProviders : []
+      for (const entry of list) {
+        const provider = typeof entry === 'string'
+          ? entry
+          : String((entry as { id?: string; name?: string; provider?: string }).id
+            ?? (entry as { name?: string }).name
+            ?? (entry as { provider?: string }).provider ?? '')
+        if (provider === '') continue
+        try {
+          const models = await llm.listModels(provider)
+          for (const model of Array.isArray(models) ? models : []) {
+            const id = typeof model === 'string' ? model : String((model as { id?: string }).id ?? '')
+            const name = typeof model === 'string'
+              ? model
+              : String((model as { name?: string }).name ?? id)
+            if (id !== '') planners.push({ provider, id, name })
+          }
+        } catch { /* one unreadable provider must not empty the whole list */ }
+      }
+    } catch { /* fall through to the config parse below */ }
+  }
   const script = `import json, os
 out = []
 def add(provider, mid, name):
@@ -307,8 +337,13 @@ print(json.dumps(uniq))
         else resolve(stdout)
       })
     })
-    const parsed = JSON.parse(raw) as ModelChoice[]
-    planners.push(...parsed)
+    if (planners.length === 0) {
+      const parsed = JSON.parse(raw) as ModelChoice[]
+      // The config key is not always the route name: the `llm-deepseek` key registers the
+      // provider "deepseek-official" (evidence: agent-default-model and the failover chain).
+      const alias: Readonly<Record<string, string>> = { deepseek: 'deepseek-official' }
+      planners.push(...parsed.map(m => ({ ...m, provider: alias[m.provider] ?? m.provider })))
+    }
   } catch { /* no catalogue readable: the dropdown simply stays empty */ }
 
   // Music models come from the renderer, which is the only source that knows what
@@ -381,6 +416,12 @@ print(json.dumps(uniq))
 
 /** The slice of the harness LLM service this plugin uses. */
 export interface LlmFace {
+  /** Provider routes the harness has registered (the only source of the real ids). */
+  listProviders?(): unknown
+  /** Configurable providers, when the harness distinguishes them. */
+  listConfigurableProviders?(): unknown
+  /** Models for one provider route. */
+  listModels?(provider: string): Promise<unknown>
   stream(options: {
     readonly provider: string
     readonly model: string
@@ -483,19 +524,34 @@ export async function planSong(
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
       if (text.length > 20_000) break
     }
-    return parsePlannedSong(text)
-  } catch {
+    const planned = parsePlannedSong(text)
+    lastPlannerError = planned === null
+      ? `model answered but the JSON did not parse (${String(text).slice(0, 80)})`
+      : null
+    return planned
+  } catch (error) {
+    lastPlannerError = `${provider}:${model} — ${error instanceof Error ? error.message : String(error)}`.slice(0, 200)
     return null
   }
 }
+
+/**
+ * Why the last planner attempt failed, or null. The radio falls back to its station pools on
+ * failure so playback never stops, and that fallback must not be silent: this is carried in the
+ * payload so the card can say "planner failed: unknown provider" instead of quietly producing
+ * instrumental songs (the bug of 2026-09-17).
+ */
+let lastPlannerError: string | null = null
 
 /** Cached catalogue, so a 15s poll does not shell out to read the config every time. */
 let catalogueCache: { at: number; value: Awaited<ReturnType<typeof readModelCatalogue>> } | null = null
 
 /** The model catalogue, cached for a minute. */
-export async function catalogueFor(cfg: RadioConfig): Promise<Awaited<ReturnType<typeof readModelCatalogue>>> {
+export async function catalogueFor(
+  cfg: RadioConfig, llm: LlmFace | null = null,
+): Promise<Awaited<ReturnType<typeof readModelCatalogue>>> {
   if (catalogueCache !== null && Date.now() - catalogueCache.at < 60_000) return catalogueCache.value
-  const value = await readModelCatalogue(cfg)
+  const value = await readModelCatalogue(cfg, llm)
   catalogueCache = { at: Date.now(), value }
   return value
 }
@@ -506,14 +562,16 @@ export async function catalogueFor(cfg: RadioConfig): Promise<Awaited<ReturnType
  * non-local provider, then anything at all. Never invents a model that the user
  * does not have.
  */
-export async function effectivePlanner(cfg: RadioConfig): Promise<string> {
+export async function effectivePlanner(cfg: RadioConfig, llm: LlmFace | null = null): Promise<string> {
   if (cfg.planner !== '') return cfg.planner
-  const { planners } = await catalogueFor(cfg)
+  const { planners } = await catalogueFor(cfg, llm)
   const pickFirst = (test: (p: string) => boolean): string | null => {
     const hit = planners.find(m => test(m.provider))
     return hit === undefined ? null : `${hit.provider}:${hit.id}`
   }
-  return pickFirst(p => p === 'deepseek')
+  // The harness's own route name is "deepseek-official"; accept any deepseek-ish id so a
+  // renamed route does not silently disable the planner again.
+  return pickFirst(p => p.includes('deepseek'))
     ?? pickFirst(p => p !== 'local-qwen' && p !== 'acestep')
     ?? (planners[0] === undefined ? '' : `${planners[0].provider}:${planners[0].id}`)
 }
@@ -614,6 +672,7 @@ export async function readRadioState(cfg: RadioConfig): Promise<RadioPayload> {
       stations: [...new Set(tracks.map(t => t.station))].filter(s => s !== 'unknown'),
     },
     stations: Object.keys(CAPTION_POOL),
+    plannerError: lastPlannerError,
     settings: {
       planner: await effectivePlanner(cfg),
       musicModel: cfg.musicModel,

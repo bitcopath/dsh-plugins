@@ -940,7 +940,8 @@ function makeHandler(
       }
       if (pathname === `${API_PREFIX}/radio/models`) {
         if (!requireGet(req, res, pathname)) return
-        sendJson(res, 200, await readModelCatalogue(await loadRadioConfig()))
+        const llmFace = (ctx as unknown as { llm?: LlmFace }).llm ?? null
+        sendJson(res, 200, await readModelCatalogue(await loadRadioConfig(), llmFace))
         return
       }
       if (pathname === `${API_PREFIX}/radio/settings`) {
@@ -972,7 +973,7 @@ function makeHandler(
         // this harness does not offer one under that name, the radio falls back to
         // its built-in station pools instead of failing.
         const llm = (ctx as unknown as { llm?: LlmFace }).llm ?? null  // declared in `inject` above
-        const chooser = { ...cfg, planner: await effectivePlanner(cfg) }
+        const chooser = { ...cfg, planner: await effectivePlanner(cfg, llm) }
         await generateTrack(chooser, station, state.tracks, llm)
         sendJson(res, 200, await readRadioState(cfg))
         return
