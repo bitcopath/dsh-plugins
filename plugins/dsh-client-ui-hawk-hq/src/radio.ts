@@ -567,6 +567,20 @@ export async function planSong(
     ? [cfg.durationMin, cfg.durationMax]
     : (STATION_LENGTH[station] ?? [180, 270])
   const { system, user } = plannerPrompt(station, avoid, pMin, pMax)
+  // Two attempts: the measured turkish failures were transient drops, and falling straight to the
+  // station pool made a flaky call look like a missing feature.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const planned = await planOnce(provider, model, system, user, llm)
+    if (planned !== null) return planned
+    if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1500))
+  }
+  return null
+}
+
+/** One planner attempt; records the reason on failure so the fallback is never silent. */
+async function planOnce(
+  provider: string, model: string, system: string, user: string, llm: LlmFace,
+): Promise<PlannedSong | null> {
   try {
     let text = ''
     const stream = llm.stream({
@@ -822,6 +836,9 @@ export async function generateTrack(
   const submitted = await acePost<{ task_id: string }>(cfg, '/release_task', {
     prompt: captionWithTempo,
     lyrics,
+    // The planner returns the song's language; without this the renderer defaults to "en"
+    // and a Turkish lyric is sung with English phonetics (proven in our own 2026-09-15 test).
+    vocal_language: planned?.lang ?? 'en',
     thinking: false,
     inference_steps: 8,
     batch_size: 1,
