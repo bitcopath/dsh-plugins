@@ -306,3 +306,29 @@ next adapter learns from, so they are stored per track and never thrown away.
 - nothing else: no Spotify, no cloud account, no paid tier is required by this
   plugin. The Spotify-taste half of the original project is a separate concern and
   can be forked in or out freely.
+
+### v1 scope: the radio GENERATES, it does not replay (owner, 2026-09-17)
+
+Ömer's decision, and it is a product decision, not a technical one:
+
+> *"Play button … should take the radio online and generate new songs. For the recorded
+> songs we need another play button and it is not radio, it is like spotify now and beats
+> our purpose … We shouldn't go in there at version 1."*
+
+So:
+
+- **Play = on air.** Pressing play writes a new song (planner → renderer) and plays it, then
+  writes the next when the current one enters its last 30 seconds. It never silently becomes
+  a replay of yesterday's songs.
+- **Only radio-written songs are in rotation** (`radio: true` in the sidecar). Anything that
+  arrived another way — imported, copied in by hand — is library material. It is counted and
+  kept, and it is deliberately *not* programming: replaying it here would turn this into a
+  music player, and a music player is a different product with its own feature set
+  (browsing, playlists, management of hundreds of songs across genres) which is shelved as
+  **v2** on the roadmap.
+- **`write 10 ahead`** is the only explicit render button: it fills the queue up front.
+- **The rail is information only** — the station in words, the song's name, where we are in
+  the song. Choosing a station happens in the modal, so the sidebar card stays small enough
+  to live above the GPU cards permanently.
+- **Nothing is deleted, ever.** Songs, ratings and seeds accumulate; the library is an asset
+  for films, ads and product videos, and the ratings are what the next adapter learns from.

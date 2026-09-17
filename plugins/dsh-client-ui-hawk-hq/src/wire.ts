@@ -234,6 +234,13 @@ export interface RadioTrack {
   readonly stars: number
   /** Hard negative: never play this again (stickier than a low rating). */
   readonly never: boolean
+  /**
+   * True when this song was written by the radio itself. The radio's rotation only ever
+   * contains these: songs that arrived some other way (imported, copied in by hand) are
+   * library material, not radio programming — replaying them would quietly turn this into
+   * a music player, which is a different product with a different feature set.
+   */
+  readonly radio?: boolean
   readonly plays: number
   readonly bytes: number
   readonly created: string

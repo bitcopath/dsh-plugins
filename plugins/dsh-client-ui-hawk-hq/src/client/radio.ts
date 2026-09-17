@@ -83,7 +83,10 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // is exactly what happened on 2026-09-17 when this client was newer than its host.)
   const tracks = Array.isArray(radio?.tracks) ? radio.tracks : []
   const current = tracks.find(t => t.id === currentId) ?? null
-  const playable = tracks.filter(t => t.never !== true)
+  // Only songs the radio itself wrote are in rotation. Everything else in the library is
+  // material for later (films, ads, product videos) -- playing it here would make this a
+  // music player, and that is a deliberately separate product (owner, 2026-09-17).
+  const playable = tracks.filter(t => t.radio === true && t.never !== true)
   const settings = radio?.settings ?? { planner: '', musicModel: '' }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
   const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
@@ -247,12 +250,15 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const health = radio?.health ?? null
   const pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0
   const title = current?.title
-    ?? (goingLive ? 'Going live…' : health?.up === true ? 'Radio ready' : 'Radio offline')
+    ?? (goingLive ? 'Going live…' : health?.up === true ? `${station}` : 'Radio offline')
+  // The rail carries information only — the station in words, the song's name, where we are
+  // in the song. No pickers: choosing a station belongs in the modal, and the sidebar stays
+  // small enough to live above the GPU cards permanently.
   const subtitle = current === null
     ? (goingLive
-        ? 'writing the first song — seconds away'
-        : `${stats?.count ?? 0} songs in library`)
-    : `${current.station}${current.bpm === null ? '' : ` · ${current.bpm} BPM`}`
+        ? `${station} · writing the first song…`
+        : `${station} · press play to go on air`)
+    : `${current.station}${current.bpm === null ? '' : ` · ${current.bpm} BPM`}${current.key === null ? '' : ` · ${current.key}`}`
 
   return h('div', { className: 'hhq-side hhq-radio' },
     h('audio', {
@@ -385,18 +391,12 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                   h('button', {
                     type: 'button',
                     className: 'hhq-radio-btn hhq-radio-btn-go',
-                    disabled: busy !== null || health?.up !== true,
-                    onClick: () => { void generate(1) },
-                  }, busy ?? 'Generate one'),
-                  h('button', {
-                    type: 'button',
-                    className: 'hhq-radio-btn',
-                    title: 'Ask the planner for ten songs now and park them in the queue',
+                    title: 'Write ten songs now and park them in the queue — pressing Play already writes one',
                     disabled: busy !== null || health?.up !== true,
                     onClick: () => { void generate(10) },
-                  }, 'write 10 ahead')),
+                  }, busy ?? 'write 10 ahead')),
                 h('div', { className: 'hhq-radio-hint' },
-                  `Rendering runs on the ai-server and takes a few seconds. The next song is written when the current one enters its last ${LEAD_SECONDS}s, so nothing renders unless the radio is playing or you press the button.`),
+                  `Play takes the radio on air: it writes a new song, plays it, and writes the next one when the current enters its last ${LEAD_SECONDS}s. Songs written this way are kept in the library forever; “write 10 ahead” fills the queue up front.`),
 
                 current?.lyrics != null
                   ? h('details', { className: 'hhq-radio-lyrics' },

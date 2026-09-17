@@ -469,6 +469,7 @@ export async function scanLibrary(dir: string): Promise<RadioTrack[]> {
       lyrics: meta.lyrics ?? null,
       stars: meta.stars ?? 0,
       never: meta.never ?? false,
+      radio: meta.radio ?? false,
       plays: meta.plays ?? 0,
       bytes,
       created: meta.created ?? new Date(mtime).toISOString(),
@@ -644,6 +645,7 @@ export async function generateTrack(
     key: typeof metas.keyscale === 'string' ? metas.keyscale : key,
     lang: planned?.lang ?? null, seed, caption: captionWithTempo, lyrics,
     stars: 0, never: false, plays: 0, bytes: bytes.length, created,
+    radio: true,
   }
   await writeFile(join(cfg.library, `${id}.json`), JSON.stringify(track, null, 1), 'utf8')
   return track
