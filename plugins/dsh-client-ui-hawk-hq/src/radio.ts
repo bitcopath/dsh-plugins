@@ -3,7 +3,7 @@
  *
  * Owns everything the sidebar card cannot do from the browser: the on-disk
  * library, the ratings that later feed adapter retraining, and the calls to the
- * ACE-Step renderer on the ai-server.
+ * ACE-Step renderer, wherever it runs.
  *
  * Deliberate choices:
  *   - No credential or machine detail lives in this repository (it is public).
@@ -39,8 +39,10 @@ function defaultStarredDir(library: string): string {
   return join(dirname(library), 'starred')
 }
 
-/** Renderer default: the ai-server's ACE-Step service. */
-const DEFAULT_ACE_BASE = 'http://192.168.0.102:8001'
+/** Renderer default: ACE-Step on the same machine. Point this at whichever host runs it
+ *  (the config file's `aceBase`, or HAWK_RADIO_ACE_BASE) — the two-machine layout is ours,
+ *  not a requirement. */
+const DEFAULT_ACE_BASE = 'http://127.0.0.1:8001'
 
 /** Starter caption pool, one entry per station family. */
 const CAPTION_POOL: Readonly<Record<string, readonly string[]>> = {
@@ -214,7 +216,7 @@ async function readConfigFile(): Promise<Record<string, unknown>> {
 /**
  * Persist the two model selections.
  *
- * They live in the same 0600 file as the renderer key, outside this repository:
+ * They live in the same 0600 file as the renderer key, outside the repository:
  * the choice is per-machine, and nothing about it belongs in public source.
  */
 export async function saveRadioSettings(
@@ -749,7 +751,7 @@ export async function revokeTrack(cfg: RadioConfig, share: ShareConfig, id: stri
  * Renders in flight, per station.
  *
  * The owner asked for a 5-second lockout on the On-Air button so a misclick cannot flip it twice.
- * That protects the UI; this protects the ai-server as well, because a bypassed or double-fired
+ * That protects the UI; this protects the renderer as well, because a bypassed or double-fired
  * request must not queue two songs.
  */
 const rendering = new Set<string>()
