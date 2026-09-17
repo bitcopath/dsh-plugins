@@ -321,8 +321,17 @@ print(json.dumps(uniq))
   // Key on the model id and use the id as the value: the renderer reports a display name
   // ("ACE-Step acestep-v15-turbo") while /health reports the id ("acestep-v15-turbo"), and
   // deduping on the display string listed the same model twice (seen 2026-09-17).
+  // The two endpoints disagree about the id itself, not just the label: /v1/models answers an
+  // OpenRouter-style "acestep/acestep-v15-turbo" while /health answers the bare
+  // "acestep-v15-turbo" the renderer actually wants in `model`. Canonicalise to the bare id so
+  // one model cannot appear twice, and so the value we send back is the one it accepts.
+  const bareId = (value: string): string => {
+    const trimmed = value.trim()
+    const cut = trimmed.lastIndexOf('/')
+    return cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  }
   const addMusic = (id: string, name?: string): void => {
-    const key = id.trim()
+    const key = bareId(id)
     if (key !== '' && !seenMusic.has(key)) {
       seenMusic.add(key)
       music.push({ provider: 'acestep', id: key, name: (name ?? key).trim(), music: true })
