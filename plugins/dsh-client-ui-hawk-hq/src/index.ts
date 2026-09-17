@@ -39,7 +39,7 @@ import type {
 import { compareVersions } from './semver.ts'
 import {
   effectivePlanner, generateTrack, loadRadioConfig, rateTrack, readJsonBody, readModelCatalogue,
-  readRadioState, saveRadioSettings, serveAudio,
+  readRadioState, renderOnce, revokeTrack, saveRadioSettings, serveAudio, shareTrack,
 } from './radio.ts'
 import type { LlmFace } from './radio.ts'
 
@@ -952,6 +952,24 @@ function makeHandler(
         const body = await readJsonBody<{ planner?: string; musicModel?: string }>(req)
         await saveRadioSettings(body)
         sendJson(res, 200, { ok: true })
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/share`) {
+        if (req.method !== 'POST') { sendJson(res, 405, errorBody('method-not-allowed', 'share is POST-only')); return }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ id?: string }>(req)
+        if (typeof body.id !== 'string' || body.id === '') { sendJson(res, 400, errorBody('bad-request', 'id is required')); return }
+        const url = await shareTrack(cfg, { shareBase: cfg.shareBase, shareSecret: cfg.shareSecret }, body.id)
+        sendJson(res, 200, { url })
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/revoke`) {
+        if (req.method !== 'POST') { sendJson(res, 405, errorBody('method-not-allowed', 'revoke is POST-only')); return }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ id?: string }>(req)
+        if (typeof body.id !== 'string' || body.id === '') { sendJson(res, 400, errorBody('bad-request', 'id is required')); return }
+        await revokeTrack(cfg, { shareBase: cfg.shareBase, shareSecret: cfg.shareSecret }, body.id)
+        sendJson(res, 200, await readRadioState(cfg))
         return
       }
       if (pathname === `${API_PREFIX}/radio/generate`) {

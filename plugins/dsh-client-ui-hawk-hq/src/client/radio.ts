@@ -92,6 +92,12 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const [error, setError] = useState<string | null>(null)
   const [station, setStation] = useState('rock-classic-metal')
   const [goingLive, setGoingLive] = useState(false)
+  /** On-Air lockout: a misclick must not flip the switch twice (owner, 2026-09-17). */
+  const [lockLeft, setLockLeft] = useState(0)
+  /** The link currently shown in the modal, if any. */
+  const [shareUrl, setShareUrl] = useState<string | null>(null)
+  const [shareBusy, setShareBusy] = useState(false)
+  const lockUntil = useRef(0)
 
   // The client bundle is re-served on every page load while the host bundle only changes on a
   // `dsh web` restart, so the two halves can disagree for a while. Every field is optional
@@ -294,6 +300,43 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     return () => window.clearInterval(timer)
   }, [current])
 
+  // One ticker for the lockout countdown; it does nothing while unlocked.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const left = Math.max(0, Math.ceil((lockUntil.current - Date.now()) / 1000))
+      setLockLeft(current => (current === left ? current : left))
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const lock = useCallback((): void => {
+    lockUntil.current = Date.now() + 5000
+    setLockLeft(5)
+  }, [])
+
+  /** On air: start playing (writing a song first if the queue is empty). */
+  const goOnAir = useCallback((): void => {
+    if (lockLeft > 0) return
+    const el = audio.current
+    if (el === null) return
+    if (current === null && playable.length === 0) { lock(); void goLive(); return }
+    if (current === null && playable.length > 0) {
+      lock(); wantPlay.current = true; setCurrentId(playable[0]!.id)
+      window.setTimeout(() => { void el.play().catch(() => setError('playback blocked')) }, 60)
+      return
+    }
+    lock(); wantPlay.current = true; void el.play().catch(() => setError('playback blocked'))
+  }, [lockLeft, current, playable, goLive, lock])
+
+  /** Off air: stop immediately, as the owner asked. */
+  const goOffAir = useCallback((): void => {
+    if (lockLeft > 0) return
+    lock()
+    wantPlay.current = false
+    audio.current?.pause()
+    setPlaying(false)
+  }, [lockLeft, lock])
+
   const rate = useCallback(async (stars: number): Promise<void> => {
     if (current === null) return
     try { await post('rate', { id: current.id, stars }) } catch (err) { setError(String(err).slice(0, 120)) }
@@ -365,10 +408,14 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     h('div', { className: 'hhq-radio-top' },
       h('button', {
         type: 'button',
-        className: `hhq-radio-play${playing ? ' hhq-radio-play-on' : ''}`,
-        onClick: toggle,
-        title: playing ? 'Pause' : 'Play',
-      }, playing ? '❚❚' : '▶'),
+        className: `hhq-radio-tower${playing ? ' hhq-radio-tower-on' : ''}`
+          + (lockLeft > 0 ? ' hhq-radio-tower-locked' : ''),
+        onClick: playing ? goOffAir : goOnAir,
+        disabled: lockLeft > 0,
+        title: lockLeft > 0
+          ? `locked for ${lockLeft}s (misclick guard)`
+          : playing ? 'On air — click to go off air' : 'Go on air',
+      }, lockLeft > 0 ? String(lockLeft) : '📡'),
       h('div', { className: 'hhq-radio-title' },
         h('b', { title }, title),
         h('span', null, subtitle)),
@@ -384,8 +431,9 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       h('span', null, `${fmtTime(pos)} / ${fmtTime(dur)}`),
       busy !== null
         ? h('span', { className: 'hhq-radio-busy' }, busy)
-        : h('span', { className: health?.up === true ? 'hhq-radio-ok' : 'hhq-radio-down' },
-            health?.up === true ? `● ${playable.length} ready` : '● renderer down'),
+        : h('span', { className: playing ? 'hhq-radio-ok' : 'hhq-radio-down' },
+            playing ? `● ON AIR · ${playable.length} ready`
+              : health?.up === true ? `● off air · ${playable.length} ready` : '● renderer down'),
       h('span', { className: 'hhq-radio-stars-mini', title: 'Rate this song' },
         [1, 2, 3, 4, 5].map(n => h('button', {
           key: n,
@@ -470,9 +518,57 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                       onClick: () => { void rate(n) },
                       title: `${n} star${n === 1 ? '' : 's'}`,
                     }, '★'))),
+                  h('button', {
+                    type: 'button',
+                    className: 'hhq-radio-chip',
+                    disabled: shareBusy || current === null,
+                    title: 'Publish this song and get a link you can send to anyone',
+                    onClick: () => {
+                      if (current === null) return
+                      setShareBusy(true)
+                      void post('share', { id: current.id })
+                        .then(async () => {
+                          const res = await fetch(`${API}/radio`)
+                          const payload = await res.json() as RadioPayload
+                          setRadio(payload)
+                          const mine = (payload.tracks ?? []).find(t => t.id === current.id)
+                          setShareUrl(mine?.shareUrl ?? null)
+                        })
+                        .catch((err: unknown) => setError(String(err).slice(0, 160)))
+                        .finally(() => setShareBusy(false))
+                    },
+                  }, shareBusy ? 'sharing…' : '⇪ share'),
                   h('button', { type: 'button', className: 'hhq-radio-chip', onClick: () => { void generate(1) } }, '♻ more like this'),
                   h('button', { type: 'button', className: 'hhq-radio-chip hhq-radio-chip-bad', onClick: () => { void neverAgain() } }, '✕ never again')),
 
+                (shareUrl !== null || current?.shareUrl !== undefined)
+                  ? (() => {
+                      const link = shareUrl ?? current?.shareUrl ?? ''
+                      return h('div', { className: 'hhq-radio-share' },
+                        h('div', { className: 'hhq-radio-lab' }, 'Share link — anyone with this can listen'),
+                        h('input', { className: 'hhq-radio-share-input', readOnly: true, value: link,
+                          onFocus: (event: React.FocusEvent<HTMLInputElement>) => event.currentTarget.select() }),
+                        h('div', { className: 'hhq-radio-row' },
+                          h('button', {
+                            type: 'button', className: 'hhq-radio-btn',
+                            onClick: () => {
+                              void navigator.clipboard.writeText(link)
+                                .then(() => setError('link copied'))
+                                .catch(() => setError('copy failed — select the field instead'))
+                            },
+                          }, 'Copy'),
+                          h('button', {
+                            type: 'button', className: 'hhq-radio-btn hhq-radio-btn-stop',
+                            title: 'Kill this link: the song stays in your library, the link stops working',
+                            onClick: () => {
+                              if (current === null) return
+                              void post('revoke', { id: current.id })
+                                .then(() => { setShareUrl(null); return refresh() })
+                                .catch((err: unknown) => setError(String(err).slice(0, 160)))
+                            },
+                          }, 'Revoke')))
+                    })()
+                  : null,
                 h('div', { className: 'hhq-radio-row' },
                   h('div', { className: 'hhq-radio-sel' }, 'Station',
                     h('select', {

@@ -241,6 +241,8 @@ export interface RadioTrack {
    * a music player, which is a different product with a different feature set.
    */
   readonly radio?: boolean
+  /** The public link, once the owner has shared this song; absent until then. */
+  readonly shareUrl?: string
   readonly plays: number
   readonly bytes: number
   readonly created: string

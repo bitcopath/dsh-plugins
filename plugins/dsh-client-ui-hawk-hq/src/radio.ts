@@ -137,6 +137,10 @@ export interface RadioConfig {
   readonly planner: string
   /** Selected renderer model id (ACE-Step); empty means the server default. */
   readonly musicModel: string
+  /** Base URL of the LAN share service; empty disables the Share action. */
+  readonly shareBase: string
+  /** The share service's secret; never in this repository, always in the config file. */
+  readonly shareSecret: string
   /**
    * Optional GLOBAL length override. 0/0 means "use the station's own band" (STATION_LENGTH),
    * which is the default: the owner's rule is that the planner picks inside a band, and the
@@ -162,6 +166,8 @@ export async function loadRadioConfig(): Promise<RadioConfig> {
     duration: Number.isFinite(dur) && dur >= 10 && dur <= 600 ? dur : 60,
     planner: pick('HAWK_RADIO_PLANNER', 'planner', ''),
     musicModel: pick('HAWK_RADIO_MUSIC_MODEL', 'musicModel', ''),
+    shareBase: pick('HAWK_RADIO_SHARE_BASE', 'shareBase', '').replace(/\/+$/, ''),
+    shareSecret: pick('HAWK_RADIO_SHARE_SECRET', 'shareSecret', ''),
     ...(() => {
       const clamp = (v: unknown, fallback: number, allowZero = false): number => {
         const n = Number(v)
@@ -647,6 +653,102 @@ export async function effectivePlanner(cfg: RadioConfig, llm: LlmFace | null = n
     ?? (planners[0] === undefined ? '' : `${planners[0].provider}:${planners[0].id}`)
 }
 
+/** The share service, and the secret the radio authenticates with. */
+export interface ShareConfig {
+  /** Base URL of the LAN share service; empty disables sharing. */
+  readonly shareBase: string
+  /** Shared secret; empty means the service refuses every write. */
+  readonly shareSecret: string
+}
+
+/**
+ * Publish one song and return its link.
+ *
+ * Two steps on purpose: metadata first (which mints the token), then the audio. The service keeps
+ * one token per song, so sharing twice returns the existing link instead of littering tokens.
+ */
+export async function shareTrack(cfg: RadioConfig, share: ShareConfig, id: string): Promise<string> {
+  if (share.shareBase === '') throw new Error('sharing is not configured (shareBase)')
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('bad track id')
+  const meta = await readSidecar(join(cfg.library, `${id}.json`)) as Partial<RadioTrack> & { shareUrl?: string }
+  const audio = join(cfg.library, `${id}.mp3`)
+  const info = await stat(audio).catch(() => null)
+  if (info === null) throw new Error('no audio for that song')
+
+  // Already shared: reuse the link so the owner never accumulates dead tokens.
+  if (typeof meta.shareUrl === 'string' && meta.shareUrl !== '') {
+    const token = meta.shareUrl.split('/s/')[1] ?? ''
+    const alive = await fetch(`${share.shareBase}/s/${token}`, { signal: AbortSignal.timeout(5000) })
+      .then(r => r.ok).catch(() => false)
+    if (alive) return meta.shareUrl
+  }
+
+  const headers = { 'content-type': 'application/json', 'x-share-secret': share.shareSecret }
+  const created = await fetch(`${share.shareBase}/api/share`, {
+    method: 'POST', headers,
+    body: JSON.stringify({
+      title: meta.title ?? id, station: meta.station ?? '', bpm: meta.bpm ?? null, key: meta.key ?? null,
+      lang: meta.lang ?? null, seconds: meta.seconds ?? 0, caption: meta.caption ?? null,
+      lyrics: meta.lyrics ?? null, id,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!created.ok) throw new Error(`share service refused the metadata (HTTP ${created.status})`)
+  const { token, url } = await created.json() as { token: string; url: string }
+
+  const bytes = await readFile(audio)
+  const uploaded = await fetch(`${share.shareBase}/api/share/${token}/audio`, {
+    method: 'PUT', headers: { 'content-type': 'audio/mpeg', 'x-share-secret': share.shareSecret },
+    body: bytes, signal: AbortSignal.timeout(60_000),
+  })
+  if (!uploaded.ok) throw new Error(`share service refused the audio (HTTP ${uploaded.status})`)
+
+  await writeFile(join(cfg.library, `${id}.json`),
+    JSON.stringify({ ...meta, shareUrl: url }, null, 1), 'utf8')
+  return url
+}
+
+/** Kill a link: the service deletes the files, and we forget the URL. */
+export async function revokeTrack(cfg: RadioConfig, share: ShareConfig, id: string): Promise<void> {
+  if (share.shareBase === '') throw new Error('sharing is not configured')
+  const path = join(cfg.library, `${id}.json`)
+  const meta = await readSidecar(path) as Partial<RadioTrack> & { shareUrl?: string }
+  const token = typeof meta.shareUrl === 'string' ? (meta.shareUrl.split('/s/')[1] ?? '') : ''
+  if (token !== '') {
+    await fetch(`${share.shareBase}/api/revoke/${token}`, {
+      method: 'POST', headers: { 'x-share-secret': share.shareSecret }, signal: AbortSignal.timeout(15_000),
+    }).catch(() => undefined)
+  }
+  const next = { ...meta }
+  delete next.shareUrl
+  await writeFile(path, JSON.stringify(next, null, 1), 'utf8')
+}
+
+/**
+ * Renders in flight, per station.
+ *
+ * The owner asked for a 5-second lockout on the On-Air button so a misclick cannot flip it twice.
+ * That protects the UI; this protects the ai-server as well, because a bypassed or double-fired
+ * request must not queue two songs.
+ */
+const rendering = new Set<string>()
+
+/** True when a render for this station is already running. */
+export function isRendering(station: string): boolean {
+  return rendering.has(station)
+}
+
+/** Run one render for a station, refusing to start a second one concurrently. */
+export async function renderOnce<T>(station: string, work: () => Promise<T>): Promise<T> {
+  if (rendering.has(station)) throw new Error(`already writing a song for ${station}`)
+  rendering.add(station)
+  try {
+    return await work()
+  } finally {
+    rendering.delete(station)
+  }
+}
+
 /** One sidecar JSON read, tolerant of a half-written file. */
 async function readSidecar(path: string): Promise<Partial<RadioTrack>> {
   try {
@@ -694,6 +796,7 @@ export async function scanLibrary(dir: string): Promise<RadioTrack[]> {
       stars: meta.stars ?? 0,
       never: meta.never ?? false,
       radio: meta.radio ?? false,
+      shareUrl: meta.shareUrl,
       plays: meta.plays ?? 0,
       bytes,
       created: meta.created ?? new Date(mtime).toISOString(),

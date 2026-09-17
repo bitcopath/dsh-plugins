@@ -205,6 +205,48 @@ export const CSS_TEXT = `
   cursor: pointer;
 }
 .hhq-radio-play-on { background: #1f3a57; border-color: #2f5a83; color: #cfe6ff; }
+.hhq-radio-tower {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: var(--dsw-alias-bg-secondary, #23262c);
+  color: var(--dsw-alias-text-tertiary, #8b9099);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  filter: grayscale(1) opacity(.65);
+}
+.hhq-radio-tower-on {
+  filter: none;
+  border-color: #3d8a63;
+  background: #16301f;
+  box-shadow: 0 0 0 0 rgba(111, 208, 140, .45);
+  animation: hhq-onair 2s ease-out infinite;
+}
+@keyframes hhq-onair {
+  0%   { box-shadow: 0 0 0 0 rgba(111, 208, 140, .45); }
+  70%  { box-shadow: 0 0 0 8px rgba(111, 208, 140, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(111, 208, 140, 0); }
+}
+.hhq-radio-tower-locked {
+  cursor: not-allowed;
+  filter: grayscale(1) opacity(.5);
+  animation: none;
+  font-size: 12px;
+}
+.hhq-radio-share { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #2c313a; }
+.hhq-radio-share-input {
+  width: 100%;
+  margin: 6px 0 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
+  background: var(--dsw-specific-input-major, #161922);
+  color: #9cc7ff;
+  font-size: 11.5px;
+}
 .hhq-radio-title { flex: 1; min-width: 0; }
 .hhq-radio-title b {
   display: block;
