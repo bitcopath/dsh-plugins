@@ -866,8 +866,8 @@ function pick<T>(list: readonly T[], used: ReadonlySet<string>, keyOf: (item: T)
 /**
  * Radio means radio: you listen to it and it is gone (owner's rule, 2026-09-17).
  *
- * Delete every song the radio itself wrote that the owner has NOT given five stars, except the ids in
- * `keep` — normally the one that is playing right now. Five-star songs are the only permanent
+ * Delete every song the radio itself wrote that the owner has NOT starred, except the ids in
+ * `keep` — normally the one that is playing right now. Starred songs are the only permanent
  * residents of the library; without this, a month of listening becomes a thousand files.
  *
  * Failure is silent by design: a song that will not delete is a song that stays, and that must never
@@ -894,7 +894,7 @@ export async function pruneUnstarred(cfg: RadioConfig, keep: readonly string[] =
       continue
     }
     if (meta.radio !== true) continue
-    if (typeof meta.stars === 'number' && meta.stars >= 5) continue
+    if (typeof meta.stars === 'number' && meta.stars >= 1) continue
     for (const ext of ['.json', '.mp3']) {
       try {
         await unlink(join(cfg.library, id + ext))

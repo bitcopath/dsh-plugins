@@ -116,7 +116,15 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const playable = tracks.filter(t =>
     (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true)
 
-  /** The queue: songs this session wrote, not heard yet, not playing now (owner's rule 2026-09-17). */
+  /**
+   * The queue: songs this session wrote that have not been heard yet and are not playing now.
+   *
+   * Five-star favourites stay in the library forever, so "how many tracks sit after the current one"
+   * is the wrong question — a keeper would look like a queued song and the radio would stop writing
+   * ahead. The queue is only ever what was written for this session (owner's rule, 2026-09-17:
+   * exactly one song ahead, never more). A song deleted by the sweep is gone from `tracks`, so it
+   * drops out of this list by itself.
+   */
   const queued = playable.filter(t => sessionWrites.current.has(t.id) && t.id !== currentId)
   const settings = radio?.settings ?? { planner: '', musicModel: '', durationMin: 0, durationMax: 0 }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
@@ -125,8 +133,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const durationMax = typeof settings.durationMax === 'number' ? settings.durationMax : 0
   const autoBand = durationMin === 0 || durationMax === 0
   const stations = Array.isArray(radio?.stations) ? radio.stations : []
-  /** Only the songs the owner rated five stars — the single list the modal shows. */
-  const fiveStar = tracks.filter(t => t.stars === 5)
+  /** Only the songs the owner starred — the single list the modal shows, and what we share. */
+  const starred = tracks.filter(t => t.stars >= 1)
   const stats = radio?.stats ?? null
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -168,12 +176,19 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     }
   }, [refresh])
 
-  /** Radio means radio: swept on advance and on going off air; five stars survive (owner's rule). */
+  /**
+   * Radio means radio: you listen to it and it is gone (owner's rule, 2026-09-17).
+   *
+   * Sweeps every song the radio wrote that has no five stars, except the ids in `keep`. Called when
+   * the next song starts (`keep` = the song now playing, so the one that just ended dies) and when
+   * the owner goes off air (`keep` = nothing, so the current one dies too). An older host has no
+   * prune route: the catch keeps that harmless — nothing is swept, and nothing breaks.
+   */
   const prune = useCallback(async (keep: readonly string[]): Promise<void> => {
     try {
       await post('prune', { keep })
       await refresh()
-    } catch { /* old host half: nothing is swept, nothing breaks */ }
+    } catch { /* old host half, or a sweep that failed: playback is never blocked by tidying */ }
   }, [refresh])
 
   /** Write one track for `forStation` — the only place a render can start. */
@@ -197,7 +212,10 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     }
   }, [tracks])
 
-  /** Step to the next track: newest-first order, skipping anything marked never. */
+  /**
+   * Step to the next track: the queued song if one was written ahead, otherwise newest-first order,
+   * skipping anything marked never. Advancing is also the moment the finished song is swept.
+   */
   const step = useCallback((delta: number): void => {
     if (playable.length === 0) return
     const index = currentId === null ? -1 : playable.findIndex(t => t.id === currentId)
@@ -208,6 +226,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       setCurrentId(next.id)
       setPos(0)
       void post('rate', { id: next.id, played: true }).catch(() => undefined)
+      // The song that just ended is deleted now unless it earned five stars; the one that is
+      // starting is the only thing this sweep must not touch.
       void prune([next.id])
     }
   }, [currentId, playable, queued, prune])
@@ -266,7 +286,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     }
   }, [current, playable, goLive])
 
-  // After a cold start, auto-play the first track that arrived.
+  // After a cold start, auto-play the first track that arrived — the one just written, never an old
+  // five-star favourite that happens to sit in the library.
   useEffect(() => {
     if (!goingLive) return
     const first = queued[0] ?? playable[0]
@@ -275,19 +296,19 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     wantPlay.current = true
     setGoingLive(false)
     window.setTimeout(() => { void audio.current?.play().catch(() => undefined) }, 120)
-  }, [goingLive, playable])
+  }, [goingLive, playable, queued])
 
   /**
-   * The owner's rule: when the current track enters its last LEAD_SECONDS, write
-   * the next one — but only when nothing is already queued after it, so the
-   * renderer is never asked for a song that is already waiting.
+   * The owner's rule (2026-09-17): when a song starts playing, the NEXT one starts being written —
+   * exactly one ahead, never two, and never a song that is already waiting. This used to fire in the
+   * last seconds of the current song; it now fires on start, which is the moment the owner described.
    */
   const ensureAhead = useCallback((): void => {
     if (busy !== null) return
     if (queued.length >= 1) return
     setBusy('writing the next song…')
     void write(current?.station ?? station).finally(() => setBusy(null))
-  }, [busy, playable, currentId, current, station, write])
+  }, [busy, queued, current, station, write])
 
 /**
    * On-air watchdog.
@@ -326,7 +347,11 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     setLockLeft(5)
   }, [])
 
-  /** On air: start playing (writing a song first if the queue is empty). */
+  /**
+   * On air: write a NEW song and play it when it lands (owner's rule, 2026-09-17 — "every new air means
+   * a new song"). It never resumes an old one: the library keeps only five-star favourites, which are
+   * for other work, not for the radio's rotation.
+   */
   const goOnAir = useCallback((): void => {
     if (lockLeft > 0) return
     const el = audio.current
@@ -336,7 +361,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     void goLive()
   }, [lockLeft, goLive, lock])
 
-  /** Off air: stop immediately, as the owner asked. */
+  /** Off air: stop immediately, and sweep the current song unless it earned five stars. */
   const goOffAir = useCallback((): void => {
     if (lockLeft > 0) return
     lock()
@@ -443,14 +468,18 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
         : h('span', { className: playing ? 'hhq-radio-ok' : 'hhq-radio-down' },
             playing ? `● ON AIR · ${playable.length} ready`
               : health?.up === true ? `● off air · ${playable.length} ready` : '● renderer down'),
-      h('span', { className: 'hhq-radio-stars-mini', title: 'Rate this song' },
-        [1, 2, 3, 4, 5].map(n => h('button', {
-          key: n,
+      (() => {
+        const starredNow = (current?.stars ?? 0) >= 1
+        return h('button', {
           type: 'button',
-          className: `hhq-radio-star${(current?.stars ?? 0) >= n ? ' on' : ''}`,
-          onClick: () => { void rate(n) },
-          title: `${n} star${n === 1 ? '' : 's'}`,
-        }, '★')))),
+          className: `hhq-radio-star${starredNow ? ' on' : ''}`,
+          disabled: current === null,
+          onClick: () => { void rate(starredNow ? 0 : 1) },
+          title: starredNow
+            ? 'Starred — it stays in your list. Click to unstar'
+            : 'Star it to keep it and put it in your list; unstarred songs are deleted as the radio moves on',
+        }, '★')
+      })()),
 
     error !== null
       ? h('div', { className: 'hhq-radio-error', onClick: () => setError(null) }, error)
@@ -518,20 +547,25 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                       wantPlay.current = false
                       audio.current?.pause()
                       setPlaying(false)
+                      // Stopping is going off air: the song dies with the session unless it has five stars.
                       void prune([])
                     },
                   }, '■ Stop')),
 
                 h('div', { className: 'hhq-radio-rate' },
-                  h('span', { className: 'hhq-radio-lab' }, 'Rate'),
-                  h('span', { className: 'hhq-radio-stars' },
-                    [1, 2, 3, 4, 5].map(n => h('button', {
-                      key: n,
+                  h('span', { className: 'hhq-radio-lab' }, 'Keep'),
+                  (() => {
+                    const starredNow = (current?.stars ?? 0) >= 1
+                    return h('button', {
                       type: 'button',
-                      className: `hhq-radio-star${(current?.stars ?? 0) >= n ? ' on' : ''}`,
-                      onClick: () => { void rate(n) },
-                      title: `${n} star${n === 1 ? '' : 's'}`,
-                    }, '★'))),
+                      className: `hhq-radio-star${starredNow ? ' on' : ''}`,
+                      disabled: current === null,
+                      onClick: () => { void rate(starredNow ? 0 : 1) },
+                      title: starredNow
+                        ? 'Starred — kept in your list. Unstar and it dies with the session'
+                        : 'One star or none: starred songs are kept and shareable, the rest are deleted',
+                    }, '★')
+                  })(),
                   h('button', {
                     type: 'button',
                     className: 'hhq-radio-chip',
@@ -636,10 +670,10 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                 // Owner, 2026-09-17: the queue list, the learning block and every non-five-star
                 // history entry were cut from this modal. What remains is the one list he asked
                 // for -- the songs he gave five stars -- and nothing else.
-                ...fiveStar.length > 0
+                ...starred.length > 0
                   ? [
-                      h('div', { className: 'hhq-radio-lab' }, `Five stars · ${fiveStar.length}`),
-                      ...fiveStar.slice(0, 10).map(t => h('div', { key: t.id, className: 'hhq-radio-hrow' },
+                      h('div', { className: 'hhq-radio-lab' }, `Starred · ${starred.length}`),
+                      ...starred.slice(0, 10).map(t => h('div', { key: t.id, className: 'hhq-radio-hrow' },
                         h('span', { className: 'hhq-radio-qi-t' }, t.title),
                         h('span', { className: 'hhq-radio-hrow-s' }, starGlyphs(5)))),
                     ]
