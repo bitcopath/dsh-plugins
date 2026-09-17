@@ -241,7 +241,7 @@ export const CSS_TEXT = `
   overflow: hidden;
 }
 .hhq-radio-bar > i { display: block; height: 100%; background: #4a9eff; }
-.hhq-radio-bar-lg { height: 6px; }
+.hhq-radio-bar-lg { height: 8px; }
 .hhq-radio-meta {
   display: flex;
   align-items: center;
@@ -273,8 +273,11 @@ export const CSS_TEXT = `
   justify-content: center;
 }
 .hhq-radio-modal {
-  width: min(720px, calc(100vw - 32px));
-  max-height: calc(100vh - 64px);
+  /* Owner, 2026-09-17: the first version was cramped -- a modal has the whole viewport to use,
+     so it takes most of it and gives the two columns room to breathe. */
+  width: min(1180px, calc(100vw - 40px));
+  min-height: min(660px, calc(100vh - 72px));
+  max-height: calc(100vh - 40px);
   overflow-y: auto;
   border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
   border-radius: 14px;
@@ -306,10 +309,10 @@ export const CSS_TEXT = `
   padding: 12px 14px 0;
 }
 .hhq-radio-models .hhq-radio-sel { flex: 1; }
-.hhq-radio-grid { display: flex; gap: 16px; padding: 14px; }
+.hhq-radio-grid { display: flex; gap: 22px; padding: 18px; }
 .hhq-radio-col { flex: 1.15; min-width: 0; }
 .hhq-radio-col-right { flex: 1; border-left: 1px solid var(--dsw-alias-border-secondary, #3a3f45); padding-left: 16px; }
-.hhq-radio-now { font-size: 21px; font-weight: 700; line-height: 1.15; }
+.hhq-radio-now { font-size: 26px; font-weight: 700; line-height: 1.15; }
 .hhq-radio-sub { font-size: 11.5px; color: var(--dsw-alias-text-tertiary, #8b9099); margin-top: 3px; }
 .hhq-radio-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
 .hhq-radio-tag, .hhq-radio-tag-st {
@@ -327,10 +330,10 @@ export const CSS_TEXT = `
   color: var(--dsw-alias-text-tertiary, #8b9099);
   margin-top: 4px;
 }
-.hhq-radio-transport { display: flex; gap: 6px; margin-top: 12px; }
+.hhq-radio-transport { display: flex; gap: 8px; margin-top: 16px; }
 .hhq-radio-btn {
   flex: 1;
-  padding: 7px 0;
+  padding: 11px 0;
   border-radius: 8px;
   border: 1px solid var(--dsw-alias-border-secondary, #3a3f45);
   background: var(--dsw-alias-bg-secondary, #23262c);
@@ -349,7 +352,7 @@ export const CSS_TEXT = `
   border: none;
   background: transparent;
   color: #4b5057;
-  font-size: 17px;
+  font-size: 22px;
   line-height: 1;
   cursor: pointer;
   padding: 0 1px;
