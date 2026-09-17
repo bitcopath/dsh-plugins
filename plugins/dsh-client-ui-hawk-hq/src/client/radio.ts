@@ -71,9 +71,14 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   /** Ids this browser session generated — the rotation fallback for an older host half. */
   const sessionWrites = useRef<Set<string>>(new Set())
   /**
-   * True while the radio is meant to be ON AIR. Set from the audio element's own play/pause
-   * events, so it stays true across a track change (a natural end fires `ended`, not `pause`)
-   * and the next song starts by itself. Without this the radio went silent after every song.
+   * True while the radio is meant to be ON AIR — a USER decision, changed only by the play,
+   * pause and stop buttons.
+   *
+   * The first version of this derived intent from the audio element's own play/pause events,
+   * and that cancelled itself: changing the track reloads the element, which fires `pause`, which
+   * cleared the intent just before the resume ran — so the owner still had to press play after
+   * every song (reported 2026-09-17, screenshot of a stopped card at 0:00). Intent must never be
+   * inferred from the element; the element's events only drive the button's appearance.
    */
   const wantPlay = useRef(false)
   const [radio, setRadio] = useState<RadioPayload | null>(null)
@@ -204,7 +209,13 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       setDur(current.seconds || 0)
       // On air: a track change is not a reason to fall silent.
       if (wantPlay.current) {
-        void el.play().catch(() => setError('playback blocked'))
+        // Browsers can refuse a play() issued during a src change; retry once shortly after,
+        // because on air means on air.
+        void el.play().catch(() => {
+          window.setTimeout(() => {
+            if (wantPlay.current) void el.play().catch(() => setError('playback blocked'))
+          }, 250)
+        })
       }
     }
   }, [current])
@@ -226,8 +237,13 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       window.setTimeout(() => { void el.play().catch(() => setError('playback blocked')) }, 60)
       return
     }
-    if (el.paused) void el.play().catch(() => setError('playback blocked'))
-    else el.pause()
+    if (el.paused) {
+      wantPlay.current = true
+      void el.play().catch(() => setError('playback blocked'))
+    } else {
+      wantPlay.current = false
+      el.pause()
+    }
   }, [current, playable, goLive])
 
   // After a cold start, auto-play the first track that arrived.
@@ -236,6 +252,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     const first = playable[0]
     if (first === undefined) return
     setCurrentId(first.id)
+    wantPlay.current = true
     setGoingLive(false)
     window.setTimeout(() => { void audio.current?.play().catch(() => undefined) }, 120)
   }, [goingLive, playable])
@@ -313,7 +330,11 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
         setPos(el.currentTime)
       },
       onLoadedMetadata: (event: SyntheticEvent<HTMLAudioElement>) => setDur(event.currentTarget.duration || 0),
-      onEnded: () => { step(1) },
+      onEnded: () => {
+        // Keep playing: the owner asked for radio, not for one song.
+        wantPlay.current = true
+        step(1)
+      },
       onError: () => setError('audio failed'),
     }),
 
@@ -413,7 +434,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     type: 'button',
                     className: 'hhq-radio-btn hhq-radio-btn-stop',
                     title: 'Pause the radio. A render already under way finishes; nothing new starts.',
-                    onClick: () => { audio.current?.pause(); setPlaying(false) },
+                    onClick: () => { wantPlay.current = false; audio.current?.pause(); setPlaying(false) },
                   }, '■ Stop')),
 
                 h('div', { className: 'hhq-radio-rate' },
