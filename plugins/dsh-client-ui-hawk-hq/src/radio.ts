@@ -456,7 +456,8 @@ function plannerPrompt(
     'artist name and never a conflicting pair like "lo-fi, hi-fi"), seconds (the length this',
     `song wants, between ${min} and ${max} seconds inclusive -- a punk track is shorter than a`,
     'ballad, so choose per song and stay inside that band), lyrics (with [Verse] and',
-    '[Chorus] tags; keep lines short; if the station is instrumental use exactly',
+    '[Chorus] tags, at most 12 short lines total -- shorter answers are better here; if the',
+    'station is instrumental use exactly',
     '[Instrumental]), bpm (integer 30-300), key (e.g. "D minor"), lang (ISO code, "none" if',
     'instrumental). Write original words; never quote an existing song.',
   ].join(' ')
@@ -468,31 +469,87 @@ function plannerPrompt(
   return { system, user }
 }
 
-/** Pull the first JSON object out of a model answer (tolerating fences). */
+/**
+ * Pull one song out of a model answer, tolerating the ways a real answer differs from JSON.
+ *
+ * Measured 2026-09-17: the same call returned usable JSON for English stations and failed for
+ * turkish-anatolian four times out of four -- Turkish lyrics are longer, so the answer is longer
+ * and the failure is either truncation or a raw control character inside a string. Both make
+ * `JSON.parse` throw, and the old single-attempt parse treated that as "the planner said nothing".
+ *
+ * Stage 1 strict JSON, stage 2 repair (escape raw control chars, close a truncated document),
+ * stage 3 field-wise extraction. `lastPlannerError` records which stage won, so the next failure
+ * of this kind is readable instead of silent.
+ */
 export function parsePlannedSong(text: string): PlannedSong | null {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
-  try {
-    const raw = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>
-    const title = typeof raw.title === 'string' ? raw.title.trim() : ''
-    const caption = typeof raw.caption === 'string' ? raw.caption.trim() : ''
-    const lyrics = typeof raw.lyrics === 'string' ? raw.lyrics.trim() : ''
-    const bpmRaw = Number(raw.bpm)
+  const candidate = start >= 0 && end > start ? text.slice(start, end + 1) : text
+
+  const finish = (raw: unknown): PlannedSong | null => {
+    const bag = raw as Record<string, unknown>
+    const title = typeof bag.title === 'string' ? bag.title.trim() : ''
+    const caption = typeof bag.caption === 'string' ? bag.caption.trim() : ''
+    const lyrics = typeof bag.lyrics === 'string' ? bag.lyrics.trim() : ''
     if (title === '' || caption === '' || lyrics === '') return null
-    const secondsRaw = Number(raw.seconds)
+    const secondsRaw = Number(bag.seconds)
+    const bpmRaw = Number(bag.bpm)
     return {
       title: title.slice(0, 80),
-      seconds: Number.isFinite(secondsRaw) ? Math.round(secondsRaw) : 0,
       caption: caption.slice(0, 600),
       lyrics: lyrics.slice(0, 4000),
+      seconds: Number.isFinite(secondsRaw) ? Math.round(secondsRaw) : 0,
       bpm: Number.isFinite(bpmRaw) ? Math.min(300, Math.max(30, Math.round(bpmRaw))) : 100,
-      key: typeof raw.key === 'string' && raw.key.trim() !== '' ? raw.key.trim().slice(0, 24) : 'A minor',
-      lang: typeof raw.lang === 'string' && raw.lang.trim() !== '' ? raw.lang.trim().slice(0, 8) : 'en',
+      key: typeof bag.key === 'string' && bag.key.trim() !== '' ? bag.key.trim().slice(0, 24) : 'A minor',
+      lang: typeof bag.lang === 'string' && bag.lang.trim() !== '' ? bag.lang.trim().slice(0, 8) : 'en',
     }
-  } catch {
-    return null
   }
+
+  // Stage 1 — the answer was clean JSON.
+  try {
+    return finish(JSON.parse(candidate))
+  } catch { /* fall through */ }
+
+  // Stage 2 — repair: escape raw newlines/tabs that sit inside string literals, and close an
+  // answer that was truncated mid-string (append the missing quote and brace).
+  try {
+    let inString = false
+    let escaped = false
+    let out = ''
+    for (const ch of candidate) {
+      if (escaped) { out += ch; escaped = false; continue }
+      if (ch === '\\') { out += ch; escaped = true; continue }
+      if (ch === '"') { inString = !inString; out += ch; continue }
+      if (inString && (ch === '\n' || ch === '\r' || ch === '\t')) { out += ch === '\t' ? '\\t' : '\\n'; continue }
+      out += ch
+    }
+    if (inString) out += '"'
+    const opens = (out.match(/\{/g) ?? []).length
+    const closes = (out.match(/\}/g) ?? []).length
+    out += '}'.repeat(Math.max(0, opens - closes))
+    const repaired = finish(JSON.parse(out))
+    if (repaired !== null) {
+      lastPlannerError = 'recovered by repairing the JSON (raw newlines or a truncated answer)'
+      return repaired
+    }
+  } catch { /* fall through */ }
+
+  // Stage 3 — field-wise: take each string field up to the next field or the closing brace.
+  const grab = (key: string): string | null => {
+    const m = new RegExp(`"${key}"\\s*:\\s*"([\\s\\S]*?)"\\s*(?:,|\\})`).exec(candidate)
+    return m === null ? null : m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"')
+  }
+  const loose = finish({
+    title: grab('title') ?? '', caption: grab('caption') ?? '', lyrics: grab('lyrics') ?? '',
+    seconds: Number(grab('seconds') ?? 0), bpm: Number(grab('bpm') ?? 0),
+    key: grab('key') ?? '', lang: grab('lang') ?? '',
+  })
+  if (loose !== null) {
+    lastPlannerError = 'recovered by field-wise extraction (the answer was not valid JSON)'
+    return loose
+  }
+  lastPlannerError = `could not read a song from the answer (${String(text).slice(0, 120)})`
+  return null
 }
 
 /**
@@ -518,7 +575,7 @@ export async function planSong(
       system,
       messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
       temperature: 0.9,
-      maxTokens: 1200,
+      maxTokens: 2000,
     })
     for await (const chunk of stream) {
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
