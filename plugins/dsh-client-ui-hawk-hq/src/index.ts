@@ -45,8 +45,16 @@ import type { LlmFace } from './radio.ts'
 
 export const name = 'hawk-hq'
 
-/** Services required by the routes. */
-export const inject = ['webServer']
+/**
+ * Services required by the routes.
+ *
+ * `llm` is the harness's model seam. It has to be DECLARED: cordis throws
+ * `cannot get property "llm" without inject` on any undeclared service access, so the
+ * earlier "read it opportunistically and fall back" approach failed with an HTTP 500 on
+ * every render (caught by the band verifier on 2026-09-17). The radio uses it for the
+ * planner only -- the model that writes the caption and lyrics -- and never for playback.
+ */
+export const inject = ['webServer', 'llm']
 
 /** Route prefix under which the plugin serves its API. */
 export const API_PREFIX = '/plugin/hawk-hq'
@@ -963,7 +971,7 @@ function makeHandler(
         // The planner is the harness's own LLM service, read opportunistically: if
         // this harness does not offer one under that name, the radio falls back to
         // its built-in station pools instead of failing.
-        const llm = (ctx as unknown as { llm?: LlmFace }).llm ?? null
+        const llm = (ctx as unknown as { llm?: LlmFace }).llm ?? null  // declared in `inject` above
         const chooser = { ...cfg, planner: await effectivePlanner(cfg) }
         await generateTrack(chooser, station, state.tracks, llm)
         sendJson(res, 200, await readRadioState(cfg))
