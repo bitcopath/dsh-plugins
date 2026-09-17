@@ -241,3 +241,68 @@ pnpm test        # node test/semver.test.mjs — imports the TypeScript source d
 ## License
 
 MIT
+
+## Hawk Radio (2026-09-16) — a radio that plays songs which do not exist yet
+
+A compact card in the sidebar above the GPU cards, with the detail in a modal
+behind its gear button. Press play and it goes live: a **planner** (a text LLM)
+writes a song, a **music model** renders it on a separate machine, and the next
+song is written when the current one enters its final 30 seconds.
+
+### Two model pickers, never one list
+
+| Picker | What it is | Where the list comes from |
+|---|---|---|
+| **Planner** | the text model that writes the caption, lyrics, BPM/key and title | the harness's own model catalogue (`~/.dsh/settings.yaml` in both of its shapes, plus the active profile patch) — so **any model the user has configured in DSH appears here**, and a cloud model (DeepSeek) is the resolved default |
+| **Music** | the renderer that turns the planner's song into audio | the renderer itself: `/v1/models` unioned with `/health`'s `loaded_model` (that list endpoint answers empty until the DiT is initialised through it, which is why both are read) |
+
+They are deliberately separate: a music model cannot write words, and an LLM
+cannot make sound.
+
+### Configuration — no machine specifics in the code
+
+Everything machine-specific lives in a config file **outside this repository**
+(`~/.config/hawk-radio/config.json`, written 0600), or in environment variables:
+
+| Key | Env override | Meaning |
+|---|---|---|
+| `library` | `HAWK_RADIO_LIBRARY` | where generated songs live (default `~/.local/share/hawk-radio/library`) |
+| `aceBase` | `HAWK_RADIO_ACE_BASE` | the renderer's base URL (an ACE-Step API) |
+| `aceKey` | `HAWK_RADIO_ACE_KEY` | its API key, if it wants one |
+| `duration` | `HAWK_RADIO_DURATION` | seconds per generated song (10–600) |
+| `planner` | `HAWK_RADIO_PLANNER` | selected planner, `provider:model` |
+| `musicModel` | `HAWK_RADIO_MUSIC_MODEL` | selected renderer model id |
+
+The planner call goes through **the harness's own LLM service**, not a direct
+provider dial: provider keys live in the harness's sealed credential store and
+base URLs belong to the provider plugins, so asking the harness means the radio
+can use any model you have configured — and no keys are duplicated into a plugin.
+
+### Host routes
+
+| Route | Does |
+|---|---|
+| `GET /plugin/hawk-hq/radio` | the payload: health, tracks, stats, stations, current selections |
+| `GET /plugin/hawk-hq/radio/models` | the two model lists |
+| `POST /plugin/hawk-hq/radio/rates` → `/rate` | set stars 1–5, `never` (a hard negative), or `played` |
+| `POST /plugin/hawk-hq/radio/generate` | write one song — the only place a render starts |
+| `POST /plugin/hawk-hq/radio/settings` | persist the planner / music-model choice |
+| `GET /plugin/hawk-hq/radio/audio/<id>` | the mp3, **with byte-range support** so playback can be scrubbed |
+
+### The library is an asset, not a cache
+
+Songs are `‹id›.mp3` plus a `‹id›.json` sidecar (title, station, bpm, key, seed,
+caption, lyrics, stars, never, plays). **Nothing is ever deleted** — a "never
+again" rating only excludes a track from playback, because these songs get reused
+as background music for films, ads and product videos later. Ratings are what the
+next adapter learns from, so they are stored per track and never thrown away.
+
+### Requirements for a fork
+
+- a **renderer** speaking the ACE-Step API (`/health`, `/v1/models`,
+  `/release_task`, `/query_result`, `/v1/audio`) — any host, the config points at it
+- a **planner** model configured in DSH (optional: without one, each station falls
+  back to its built-in caption/title pools and keeps working)
+- nothing else: no Spotify, no cloud account, no paid tier is required by this
+  plugin. The Spotify-taste half of the original project is a separate concern and
+  can be forked in or out freely.

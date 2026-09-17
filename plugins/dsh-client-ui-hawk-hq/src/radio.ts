@@ -279,6 +279,150 @@ print(json.dumps(uniq))
   return { planners, music }
 }
 
+/**
+ * The planner: the text model that writes a song before the renderer makes it.
+ *
+ * The call goes through the harness's own LLM service rather than dialling a
+ * provider here, because provider keys live in the harness's sealed credential
+ * store and provider base URLs belong to the provider plugins. Asking the
+ * harness means the radio can use ANY model the user has configured — which is
+ * the point: this plugin ships open source, and the user's own model list is the
+ * source of truth.
+ *
+ * Everything about this is best-effort by design: if the service is absent, the
+ * model refuses, or the JSON does not parse, the caller falls back to the
+ * built-in station pools, so the radio never stops playing because a planner
+ * misbehaved.
+ */
+
+/** The slice of the harness LLM service this plugin uses. */
+export interface LlmFace {
+  stream(options: {
+    readonly provider: string
+    readonly model: string
+    readonly system?: string
+    readonly messages: readonly unknown[]
+    readonly temperature?: number
+    readonly maxTokens?: number
+  }): AsyncIterable<{ readonly type?: string; readonly text?: string }>
+}
+
+/** One song as the planner wrote it. */
+export interface PlannedSong {
+  readonly title: string
+  readonly caption: string
+  readonly lyrics: string
+  readonly bpm: number
+  readonly key: string
+  readonly lang: string
+}
+
+/** The instruction the planner is held to. */
+function plannerPrompt(station: string, avoid: readonly string[]): { system: string; user: string } {
+  const system = [
+    'You are a music producer writing ONE new song for a personal radio station.',
+    'Answer with a single JSON object and nothing else. No prose, no code fences.',
+    'Fields: title (short, evocative, the station\'s language), caption (a comma-separated',
+    'production description: genre, instruments, mood, vocal type, production era — never an',
+    'artist name and never a conflicting pair like "lo-fi, hi-fi"), lyrics (with [Verse] and',
+    '[Chorus] tags; keep lines short; if the station is instrumental use exactly',
+    '[Instrumental]), bpm (integer 30-300), key (e.g. "D minor"), lang (ISO code, "none" if',
+    'instrumental). Write original words; never quote an existing song.',
+  ].join(' ')
+  const user = [
+    `Station: ${station}.`,
+    avoid.length > 0 ? `Do not reuse these titles: ${avoid.slice(0, 30).join(', ')}.` : '',
+    'Return the JSON object now.',
+  ].filter(line => line !== '').join(' ')
+  return { system, user }
+}
+
+/** Pull the first JSON object out of a model answer (tolerating fences). */
+export function parsePlannedSong(text: string): PlannedSong | null {
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    const raw = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>
+    const title = typeof raw.title === 'string' ? raw.title.trim() : ''
+    const caption = typeof raw.caption === 'string' ? raw.caption.trim() : ''
+    const lyrics = typeof raw.lyrics === 'string' ? raw.lyrics.trim() : ''
+    const bpmRaw = Number(raw.bpm)
+    if (title === '' || caption === '' || lyrics === '') return null
+    return {
+      title: title.slice(0, 80),
+      caption: caption.slice(0, 600),
+      lyrics: lyrics.slice(0, 4000),
+      bpm: Number.isFinite(bpmRaw) ? Math.min(300, Math.max(30, Math.round(bpmRaw))) : 100,
+      key: typeof raw.key === 'string' && raw.key.trim() !== '' ? raw.key.trim().slice(0, 24) : 'A minor',
+      lang: typeof raw.lang === 'string' && raw.lang.trim() !== '' ? raw.lang.trim().slice(0, 8) : 'en',
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Ask the planner for one song. Returns null on every failure path, which is the
+ * caller's signal to use the station's own pool instead.
+ */
+export async function planSong(
+  cfg: RadioConfig, station: string, avoid: readonly string[], llm: LlmFace | null,
+): Promise<PlannedSong | null> {
+  if (llm === null || cfg.planner === '') return null
+  const [provider, ...rest] = cfg.planner.split(':')
+  const model = rest.join(':')
+  if (!provider || model === '') return null
+  const { system, user } = plannerPrompt(station, avoid)
+  try {
+    let text = ''
+    const stream = llm.stream({
+      provider,
+      model,
+      system,
+      messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
+      temperature: 0.9,
+      maxTokens: 1200,
+    })
+    for await (const chunk of stream) {
+      if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+      if (text.length > 20_000) break
+    }
+    return parsePlannedSong(text)
+  } catch {
+    return null
+  }
+}
+
+/** Cached catalogue, so a 15s poll does not shell out to read the config every time. */
+let catalogueCache: { at: number; value: Awaited<ReturnType<typeof readModelCatalogue>> } | null = null
+
+/** The model catalogue, cached for a minute. */
+export async function catalogueFor(cfg: RadioConfig): Promise<Awaited<ReturnType<typeof readModelCatalogue>>> {
+  if (catalogueCache !== null && Date.now() - catalogueCache.at < 60_000) return catalogueCache.value
+  const value = await readModelCatalogue(cfg)
+  catalogueCache = { at: Date.now(), value }
+  return value
+}
+
+/**
+ * The planner actually used when the owner has not chosen one yet: a cloud model
+ * they already configured, preferring DeepSeek (the house default), then any
+ * non-local provider, then anything at all. Never invents a model that the user
+ * does not have.
+ */
+export async function effectivePlanner(cfg: RadioConfig): Promise<string> {
+  if (cfg.planner !== '') return cfg.planner
+  const { planners } = await catalogueFor(cfg)
+  const pickFirst = (test: (p: string) => boolean): string | null => {
+    const hit = planners.find(m => test(m.provider))
+    return hit === undefined ? null : `${hit.provider}:${hit.id}`
+  }
+  return pickFirst(p => p === 'deepseek')
+    ?? pickFirst(p => p !== 'local-qwen' && p !== 'acestep')
+    ?? (planners[0] === undefined ? '' : `${planners[0].provider}:${planners[0].id}`)
+}
+
 /** One sidecar JSON read, tolerant of a half-written file. */
 async function readSidecar(path: string): Promise<Partial<RadioTrack>> {
   try {
@@ -374,7 +518,7 @@ export async function readRadioState(cfg: RadioConfig): Promise<RadioPayload> {
       stations: [...new Set(tracks.map(t => t.station))].filter(s => s !== 'unknown'),
     },
     stations: Object.keys(CAPTION_POOL),
-    settings: { planner: cfg.planner, musicModel: cfg.musicModel },
+    settings: { planner: await effectivePlanner(cfg), musicModel: cfg.musicModel },
   }
 }
 
@@ -428,25 +572,30 @@ async function acePost<T>(
  * retraining pass knows what the track actually was.
  */
 export async function generateTrack(
-  cfg: RadioConfig, station: string, existing: readonly RadioTrack[],
+  cfg: RadioConfig, station: string, existing: readonly RadioTrack[], llm: LlmFace | null = null,
 ): Promise<RadioTrack> {
   const captions = CAPTION_POOL[station]
   if (!captions) throw new Error(`unknown station ${station}`)
   const usedTitles = new Set(existing.map(t => t.title))
-  const title = pick(TITLE_POOL[station] ?? ['Untitled'], usedTitles, t => t)
-  const caption = captions[Math.floor(Math.random() * captions.length)]!
+  // The planner writes a fresh song when one is configured; the station pool is the
+  // fallback, so a missing/failing planner degrades instead of breaking playback.
+  const planned = await planSong(cfg, station, [...usedTitles], llm)
+  const title = planned?.title ?? pick(TITLE_POOL[station] ?? ['Untitled'], usedTitles, t => t)
+  const caption = planned?.caption ?? captions[Math.floor(Math.random() * captions.length)]!
   const created = new Date().toISOString()
   const id = `${station}_${created.slice(0, 10)}_${Math.random().toString(36).slice(2, 8)}`
 
   // One tempo/key pick, used in BOTH homes: the caption text and the parameters.
   const tempo = STATION_TEMPO[station] ?? { bpm: [90, 120] as const, keys: ['A minor'] }
-  const bpm = tempo.bpm[0] + Math.floor(Math.random() * (tempo.bpm[1] - tempo.bpm[0] + 1))
-  const key = tempo.keys[Math.floor(Math.random() * tempo.keys.length)] ?? 'A minor'
+  const bpm = planned?.bpm
+    ?? (tempo.bpm[0] + Math.floor(Math.random() * (tempo.bpm[1] - tempo.bpm[0] + 1)))
+  const key = planned?.key ?? tempo.keys[Math.floor(Math.random() * tempo.keys.length)] ?? 'A minor'
+  const lyrics = planned?.lyrics ?? '[Instrumental]'
   const captionWithTempo = `${caption}, ${bpm} bpm, ${key}`
 
   const submitted = await acePost<{ task_id: string }>(cfg, '/release_task', {
     prompt: captionWithTempo,
-    lyrics: '[Instrumental]',
+    lyrics,
     thinking: false,
     inference_steps: 8,
     batch_size: 1,
@@ -493,7 +642,7 @@ export async function generateTrack(
     id, title, station, seconds: cfg.duration,
     bpm: typeof metas.bpm === 'number' ? metas.bpm : bpm,
     key: typeof metas.keyscale === 'string' ? metas.keyscale : key,
-    lang: null, seed, caption: captionWithTempo, lyrics: '[Instrumental]',
+    lang: planned?.lang ?? null, seed, caption: captionWithTempo, lyrics,
     stars: 0, never: false, plays: 0, bytes: bytes.length, created,
   }
   await writeFile(join(cfg.library, `${id}.json`), JSON.stringify(track, null, 1), 'utf8')

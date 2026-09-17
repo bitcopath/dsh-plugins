@@ -38,9 +38,10 @@ import type {
 } from './wire.ts'
 import { compareVersions } from './semver.ts'
 import {
-  generateTrack, loadRadioConfig, rateTrack, readJsonBody, readModelCatalogue, readRadioState,
-  saveRadioSettings, serveAudio,
+  effectivePlanner, generateTrack, loadRadioConfig, rateTrack, readJsonBody, readModelCatalogue,
+  readRadioState, saveRadioSettings, serveAudio,
 } from './radio.ts'
+import type { LlmFace } from './radio.ts'
 
 export const name = 'hawk-hq'
 
@@ -959,7 +960,12 @@ function makeHandler(
         }
         // A render occupies the ai-server for a few seconds; the owner asks for it
         // explicitly, so this is the only place a render can start.
-        await generateTrack(cfg, station, state.tracks)
+        // The planner is the harness's own LLM service, read opportunistically: if
+        // this harness does not offer one under that name, the radio falls back to
+        // its built-in station pools instead of failing.
+        const llm = (ctx as unknown as { llm?: LlmFace }).llm ?? null
+        const chooser = { ...cfg, planner: await effectivePlanner(cfg) }
+        await generateTrack(chooser, station, state.tracks, llm)
         sendJson(res, 200, await readRadioState(cfg))
         return
       }
