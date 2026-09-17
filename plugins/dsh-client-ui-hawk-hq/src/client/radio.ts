@@ -113,8 +113,10 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // `sessionWrites` covers the window where this client is newer than its host: the old host
   // does not emit the `radio` marker yet, so the ids this browser generated are treated as
   // radio songs until the restart lands. Library material never qualifies either way.
+  // The LIVE pipeline only: a starred song is reserved, not radio material, so it leaves the rotation
+  // (and the "ready" count) the moment it is starred — owner's rule, 2026-09-17.
   const playable = tracks.filter(t =>
-    (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true)
+    (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true && t.stars === 0)
 
   /**
    * The queue: songs this session wrote that have not been heard yet and are not playing now.
@@ -675,7 +677,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                       h('div', { className: 'hhq-radio-lab' }, `Starred · ${starred.length}`),
                       ...starred.slice(0, 10).map(t => h('div', { key: t.id, className: 'hhq-radio-hrow' },
                         h('span', { className: 'hhq-radio-qi-t' }, t.title),
-                        h('span', { className: 'hhq-radio-hrow-s' }, starGlyphs(5)))),
+                        h('span', { className: 'hhq-radio-hrow-s' }, '★'))),
                     ]
                   : [])),
             h('div', { className: 'hhq-radio-foot' },
