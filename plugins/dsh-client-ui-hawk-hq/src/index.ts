@@ -38,7 +38,8 @@ import type {
 } from './wire.ts'
 import { compareVersions } from './semver.ts'
 import {
-  generateTrack, loadRadioConfig, rateTrack, readJsonBody, readRadioState, serveAudio,
+  generateTrack, loadRadioConfig, rateTrack, readJsonBody, readModelCatalogue, readRadioState,
+  saveRadioSettings, serveAudio,
 } from './radio.ts'
 
 export const name = 'hawk-hq'
@@ -926,6 +927,21 @@ function makeHandler(
         }
         await rateTrack(cfg, body.id, { stars: body.stars, never: body.never, played: body.played })
         sendJson(res, 200, await readRadioState(cfg))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/models`) {
+        if (!requireGet(req, res, pathname)) return
+        sendJson(res, 200, await readModelCatalogue(await loadRadioConfig()))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/settings`) {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, errorBody('method-not-allowed', 'settings is POST-only'))
+          return
+        }
+        const body = await readJsonBody<{ planner?: string; musicModel?: string }>(req)
+        await saveRadioSettings(body)
+        sendJson(res, 200, { ok: true })
         return
       }
       if (pathname === `${API_PREFIX}/radio/generate`) {

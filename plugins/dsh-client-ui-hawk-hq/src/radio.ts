@@ -99,6 +99,10 @@ export interface RadioConfig {
   readonly aceKey: string
   /** Seconds per generated track. */
   readonly duration: number
+  /** Selected planner model ("provider:model"), persisted so the choice sticks. */
+  readonly planner: string
+  /** Selected renderer model id (ACE-Step); empty means the server default. */
+  readonly musicModel: string
 }
 
 /** Read the owner's config file if it exists; environment wins where present. */
@@ -115,7 +119,164 @@ export async function loadRadioConfig(): Promise<RadioConfig> {
     aceBase: pick('HAWK_RADIO_ACE_BASE', 'aceBase', DEFAULT_ACE_BASE).replace(/\/+$/, ''),
     aceKey: pick('HAWK_RADIO_ACE_KEY', 'aceKey', ''),
     duration: Number.isFinite(dur) && dur >= 10 && dur <= 600 ? dur : 60,
+    planner: pick('HAWK_RADIO_PLANNER', 'planner', ''),
+    musicModel: pick('HAWK_RADIO_MUSIC_MODEL', 'musicModel', ''),
   }
+}
+
+/** The raw config file as an object (used when persisting a selection). */
+async function readConfigFile(): Promise<Record<string, unknown>> {
+  try {
+    return JSON.parse(await readFile(RADIO_CONFIG, 'utf8')) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Persist the two model selections.
+ *
+ * They live in the same 0600 file as the renderer key, outside this repository:
+ * the choice is per-machine, and nothing about it belongs in public source.
+ */
+export async function saveRadioSettings(
+  patch: { planner?: string; musicModel?: string },
+): Promise<void> {
+  const file = await readConfigFile()
+  if (typeof patch.planner === 'string') file.planner = patch.planner
+  if (typeof patch.musicModel === 'string') file.musicModel = patch.musicModel
+  await writeFile(RADIO_CONFIG, JSON.stringify(file, null, 1), { encoding: 'utf8', mode: 0o600 })
+}
+
+/** One selectable planner model. */
+export interface ModelChoice {
+  readonly provider: string
+  readonly id: string
+  readonly name: string
+  /** True for the renderer entry, so the UI can keep it out of the planner list. */
+  readonly music?: boolean
+}
+
+/**
+ * The model catalogue.
+ *
+ * Planners come from the harness's own configuration (settings.yaml plus the
+ * active profile patch), because that IS the list the harness shows; reading the
+ * same files keeps the two in step without a second source of truth. Music
+ * models come from the renderer itself (`/v1/models`), which is the only list
+ * that knows what is actually installed on that box — XL shows up the day it
+ * lands, with no change here.
+ */
+export async function readModelCatalogue(cfg: RadioConfig): Promise<{
+  planners: readonly ModelChoice[]; music: readonly ModelChoice[]
+}> {
+  const planners: ModelChoice[] = []
+  const script = `import json, os
+out = []
+def add(provider, mid, name):
+    if mid:
+        out.append({'provider': str(provider), 'id': str(mid), 'name': str(name or mid)})
+
+def from_settings(path):
+    try:
+        import yaml
+        docs = yaml.safe_load(open(path, encoding='utf-8')) or {}
+    except Exception:
+        return
+    if not isinstance(docs, dict):
+        return
+    for key, val in docs.items():
+        if not str(key).startswith('llm-') or not isinstance(val, dict):
+            continue
+        plugin = str(key)[4:]
+        # Shape A (llm-pi-ai): named providers, each with its own model list.
+        provs = val.get('providers')
+        if isinstance(provs, dict):
+            for pname, pconf in provs.items():
+                if not isinstance(pconf, dict):
+                    continue
+                for m in pconf.get('models') or []:
+                    if isinstance(m, dict):
+                        add(pname, m.get('id'), m.get('displayName') or m.get('name') or pconf.get('displayName'))
+        # Shape B (llm-deepseek): the plugin itself is the provider.
+        for m in val.get('models') or []:
+            if isinstance(m, dict):
+                add(plugin, m.get('id'), m.get('name'))
+
+def from_patch(path):
+    try:
+        import yaml
+        docs = yaml.safe_load(open(path, encoding='utf-8')) or []
+    except Exception:
+        return
+    if isinstance(docs, dict):
+        docs = docs.get('insert', []) or []
+    for row in docs if isinstance(docs, list) else []:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get('id', ''))
+        if not rid.startswith('llm-'):
+            continue
+        for m in ((row.get('config') or {}).get('models') or []):
+            if isinstance(m, dict):
+                add(rid[4:], m.get('id'), m.get('name'))
+
+from_settings(os.path.expanduser('~/.dsh/settings.yaml'))
+from_patch(os.path.expanduser('~/.dsh/profiles/web/cordis.patch.yml'))
+seen, uniq = set(), []
+for m in out:
+    k = m['provider'] + ':' + m['id']
+    if k not in seen:
+        seen.add(k)
+        uniq.append(m)
+print(json.dumps(uniq))
+`
+  try {
+    const { execFile } = await import('node:child_process')
+    const raw = await new Promise<string>((resolve, reject) => {
+      execFile('python3', ['-c', script], { timeout: 8000 }, (error, stdout) => {
+        if (error) reject(error)
+        else resolve(stdout)
+      })
+    })
+    const parsed = JSON.parse(raw) as ModelChoice[]
+    planners.push(...parsed)
+  } catch { /* no catalogue readable: the dropdown simply stays empty */ }
+
+  // Music models come from the renderer, which is the only source that knows what
+  // is installed there. Its /v1/models list is empty while the DiT is not
+  // "initialized" through that endpoint, so /health's loaded_model is the reliable
+  // entry point -- together they list exactly what can be asked for today, and XL
+  // appears the day it is installed, with no change here.
+  const music: ModelChoice[] = []
+  const seenMusic = new Set<string>()
+  const addMusic = (id: string): void => {
+    if (id !== '' && !seenMusic.has(id)) { seenMusic.add(id); music.push({ provider: 'acestep', id, name: id, music: true }) }
+  }
+  try {
+    const res = await fetch(`${cfg.aceBase}/v1/models`, {
+      headers: cfg.aceKey === '' ? {} : { authorization: `Bearer ${cfg.aceKey}` },
+      signal: AbortSignal.timeout(3000),
+    })
+    if (res.ok) {
+      const body = await res.json() as { data?: unknown }
+      for (const row of Array.isArray(body.data) ? body.data : []) {
+        const item = row as { name?: string; id?: string }
+        addMusic(String(item.name ?? item.id ?? ''))
+      }
+    }
+  } catch { /* fall through to the health read below */ }
+  try {
+    const res = await fetch(`${cfg.aceBase}/health`, {
+      headers: cfg.aceKey === '' ? {} : { authorization: `Bearer ${cfg.aceKey}` },
+      signal: AbortSignal.timeout(3000),
+    })
+    if (res.ok) {
+      const body = await res.json() as { data?: { loaded_model?: string } }
+      addMusic(String(body.data?.loaded_model ?? ''))
+    }
+  } catch { /* renderer down: an empty music list is the honest answer */ }
+  return { planners, music }
 }
 
 /** One sidecar JSON read, tolerant of a half-written file. */
@@ -213,6 +374,7 @@ export async function readRadioState(cfg: RadioConfig): Promise<RadioPayload> {
       stations: [...new Set(tracks.map(t => t.station))].filter(s => s !== 'unknown'),
     },
     stations: Object.keys(CAPTION_POOL),
+    settings: { planner: cfg.planner, musicModel: cfg.musicModel },
   }
 }
 
@@ -293,6 +455,8 @@ export async function generateTrack(
     key_scale: key,
     time_signature: '4',
     use_random_seed: true,
+    // Selected renderer model, when the owner picked one from the renderer's own list.
+    ...(cfg.musicModel === '' ? {} : { model: cfg.musicModel }),
   }, 60_000)
 
   const deadline = Date.now() + 180_000

@@ -300,6 +300,12 @@ export const CSS_TEXT = `
   color: var(--dsw-alias-text-tertiary, #8b9099);
   cursor: pointer;
 }
+.hhq-radio-models {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px 0;
+}
+.hhq-radio-models .hhq-radio-sel { flex: 1; }
 .hhq-radio-grid { display: flex; gap: 16px; padding: 14px; }
 .hhq-radio-col { flex: 1.15; min-width: 0; }
 .hhq-radio-col-right { flex: 1; border-left: 1px solid var(--dsw-alias-border-secondary, #3a3f45); padding-left: 16px; }
