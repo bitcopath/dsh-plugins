@@ -103,6 +103,11 @@ export interface RadioConfig {
   readonly planner: string
   /** Selected renderer model id (ACE-Step); empty means the server default. */
   readonly musicModel: string
+  /**
+   * Song length. 0 means "let the planner decide per song" (a punk track and a ballad
+   * should not be the same length); any 10-600 value is a hard override the owner set.
+   */
+  readonly durationOverride: number
 }
 
 /** Read the owner's config file if it exists; environment wins where present. */
@@ -121,6 +126,10 @@ export async function loadRadioConfig(): Promise<RadioConfig> {
     duration: Number.isFinite(dur) && dur >= 10 && dur <= 600 ? dur : 60,
     planner: pick('HAWK_RADIO_PLANNER', 'planner', ''),
     musicModel: pick('HAWK_RADIO_MUSIC_MODEL', 'musicModel', ''),
+    durationOverride: (() => {
+      const raw = Number(process.env.HAWK_RADIO_DURATION_OVERRIDE ?? file.durationOverride ?? 0)
+      return Number.isFinite(raw) && raw >= 10 && raw <= 600 ? Math.round(raw) : 0
+    })(),
   }
 }
 
@@ -140,11 +149,15 @@ async function readConfigFile(): Promise<Record<string, unknown>> {
  * the choice is per-machine, and nothing about it belongs in public source.
  */
 export async function saveRadioSettings(
-  patch: { planner?: string; musicModel?: string },
+  patch: { planner?: string; musicModel?: string; durationOverride?: number },
 ): Promise<void> {
   const file = await readConfigFile()
   if (typeof patch.planner === 'string') file.planner = patch.planner
   if (typeof patch.musicModel === 'string') file.musicModel = patch.musicModel
+  if (typeof patch.durationOverride === 'number') {
+    const value = Math.round(patch.durationOverride)
+    file.durationOverride = value >= 10 && value <= 600 ? value : 0
+  }
   await writeFile(RADIO_CONFIG, JSON.stringify(file, null, 1), { encoding: 'utf8', mode: 0o600 })
 }
 
@@ -310,6 +323,8 @@ export interface LlmFace {
 /** One song as the planner wrote it. */
 export interface PlannedSong {
   readonly title: string
+  /** Length in seconds as the planner judged it; the caller clamps it. */
+  readonly seconds: number
   readonly caption: string
   readonly lyrics: string
   readonly bpm: number
@@ -322,7 +337,8 @@ function plannerPrompt(station: string, avoid: readonly string[]): { system: str
   const system = [
     'You are a music producer writing ONE new song for a personal radio station.',
     'Answer with a single JSON object and nothing else. No prose, no code fences.',
-    'Fields: title (short, evocative, the station\'s language), caption (a comma-separated',
+    'Fields: title (short, evocative, the station\'s language), seconds (the length this song',
+    'wants, 30-300; a punk track is shorter than a ballad), caption (a comma-separated',
     'production description: genre, instruments, mood, vocal type, production era — never an',
     'artist name and never a conflicting pair like "lo-fi, hi-fi"), lyrics (with [Verse] and',
     '[Chorus] tags; keep lines short; if the station is instrumental use exactly',
@@ -349,8 +365,10 @@ export function parsePlannedSong(text: string): PlannedSong | null {
     const lyrics = typeof raw.lyrics === 'string' ? raw.lyrics.trim() : ''
     const bpmRaw = Number(raw.bpm)
     if (title === '' || caption === '' || lyrics === '') return null
+    const secondsRaw = Number(raw.seconds)
     return {
       title: title.slice(0, 80),
+      seconds: Number.isFinite(secondsRaw) ? Math.min(300, Math.max(30, Math.round(secondsRaw))) : 0,
       caption: caption.slice(0, 600),
       lyrics: lyrics.slice(0, 4000),
       bpm: Number.isFinite(bpmRaw) ? Math.min(300, Math.max(30, Math.round(bpmRaw))) : 100,
@@ -519,7 +537,7 @@ export async function readRadioState(cfg: RadioConfig): Promise<RadioPayload> {
       stations: [...new Set(tracks.map(t => t.station))].filter(s => s !== 'unknown'),
     },
     stations: Object.keys(CAPTION_POOL),
-    settings: { planner: await effectivePlanner(cfg), musicModel: cfg.musicModel },
+    settings: { planner: await effectivePlanner(cfg), musicModel: cfg.musicModel, durationOverride: cfg.durationOverride },
   }
 }
 
@@ -594,13 +612,18 @@ export async function generateTrack(
   const lyrics = planned?.lyrics ?? '[Instrumental]'
   const captionWithTempo = `${caption}, ${bpm} bpm, ${key}`
 
+  // Length: the owner's override wins, else the planner's judgement, else the config default.
+  const seconds = cfg.durationOverride > 0
+    ? cfg.durationOverride
+    : (planned?.seconds !== undefined && planned.seconds > 0 ? planned.seconds : cfg.duration)
+
   const submitted = await acePost<{ task_id: string }>(cfg, '/release_task', {
     prompt: captionWithTempo,
     lyrics,
     thinking: false,
     inference_steps: 8,
     batch_size: 1,
-    audio_duration: cfg.duration,
+    audio_duration: seconds,
     bpm,
     key_scale: key,
     time_signature: '4',
@@ -640,7 +663,7 @@ export async function generateTrack(
   await writeFile(join(cfg.library, `${id}.mp3`), bytes)
 
   const track: RadioTrack = {
-    id, title, station, seconds: cfg.duration,
+    id, title, station, seconds,
     bpm: typeof metas.bpm === 'number' ? metas.bpm : bpm,
     key: typeof metas.keyscale === 'string' ? metas.keyscale : key,
     lang: planned?.lang ?? null, seed, caption: captionWithTempo, lyrics,

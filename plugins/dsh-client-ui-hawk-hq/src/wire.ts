@@ -263,5 +263,9 @@ export interface RadioPayload {
   /** Stations the renderer can be asked for, from the caption pool. */
   readonly stations: readonly string[]
   /** The owner's current model selections, so the dropdowns open on the real values. */
-  readonly settings: { readonly planner: string; readonly musicModel: string }
+  readonly settings: {
+    readonly planner: string
+    readonly musicModel: string
+    readonly durationOverride: number
+  }
 }
