@@ -104,10 +104,12 @@ export interface RadioConfig {
   /** Selected renderer model id (ACE-Step); empty means the server default. */
   readonly musicModel: string
   /**
-   * Song length. 0 means "let the planner decide per song" (a punk track and a ballad
-   * should not be the same length); any 10-600 value is a hard override the owner set.
+   * Song length BAND. The planner picks the length of each song inside these bounds
+   * (owner, 2026-09-17: "no length default, we'll put min-max and the song planner will pick
+   * the length as it will write the song, it will stay in min-max boundaries only").
    */
-  readonly durationOverride: number
+  readonly durationMin: number
+  readonly durationMax: number
 }
 
 /** Read the owner's config file if it exists; environment wins where present. */
@@ -126,9 +128,15 @@ export async function loadRadioConfig(): Promise<RadioConfig> {
     duration: Number.isFinite(dur) && dur >= 10 && dur <= 600 ? dur : 60,
     planner: pick('HAWK_RADIO_PLANNER', 'planner', ''),
     musicModel: pick('HAWK_RADIO_MUSIC_MODEL', 'musicModel', ''),
-    durationOverride: (() => {
-      const raw = Number(process.env.HAWK_RADIO_DURATION_OVERRIDE ?? file.durationOverride ?? 0)
-      return Number.isFinite(raw) && raw >= 10 && raw <= 600 ? Math.round(raw) : 0
+    ...(() => {
+      const clamp = (v: unknown, fallback: number): number => {
+        const n = Number(v)
+        return Number.isFinite(n) && n >= 10 && n <= 600 ? Math.round(n) : fallback
+      }
+      const min = clamp(process.env.HAWK_RADIO_DURATION_MIN ?? file.durationMin, 90)
+      const max = clamp(process.env.HAWK_RADIO_DURATION_MAX ?? file.durationMax, 210)
+      // A band is only a band if it is the right way round; swap rather than refuse.
+      return min <= max ? { durationMin: min, durationMax: max } : { durationMin: max, durationMax: min }
     })(),
   }
 }
@@ -149,14 +157,24 @@ async function readConfigFile(): Promise<Record<string, unknown>> {
  * the choice is per-machine, and nothing about it belongs in public source.
  */
 export async function saveRadioSettings(
-  patch: { planner?: string; musicModel?: string; durationOverride?: number },
+  patch: { planner?: string; musicModel?: string; durationMin?: number; durationMax?: number },
 ): Promise<void> {
   const file = await readConfigFile()
   if (typeof patch.planner === 'string') file.planner = patch.planner
   if (typeof patch.musicModel === 'string') file.musicModel = patch.musicModel
-  if (typeof patch.durationOverride === 'number') {
-    const value = Math.round(patch.durationOverride)
-    file.durationOverride = value >= 10 && value <= 600 ? value : 0
+  for (const key of ['durationMin', 'durationMax'] as const) {
+    const value = patch[key]
+    if (typeof value === 'number') {
+      const rounded = Math.round(value)
+      if (rounded >= 10 && rounded <= 600) file[key] = rounded
+    }
+  }
+  // Keep the band ordered whatever the two calls arrived in.
+  const lo = Number(file.durationMin ?? 90)
+  const hi = Number(file.durationMax ?? 210)
+  if (Number.isFinite(lo) && Number.isFinite(hi) && lo > hi) {
+    file.durationMin = hi
+    file.durationMax = lo
   }
   await writeFile(RADIO_CONFIG, JSON.stringify(file, null, 1), { encoding: 'utf8', mode: 0o600 })
 }
@@ -333,14 +351,17 @@ export interface PlannedSong {
 }
 
 /** The instruction the planner is held to. */
-function plannerPrompt(station: string, avoid: readonly string[]): { system: string; user: string } {
+function plannerPrompt(
+  station: string, avoid: readonly string[], min: number, max: number,
+): { system: string; user: string } {
   const system = [
     'You are a music producer writing ONE new song for a personal radio station.',
     'Answer with a single JSON object and nothing else. No prose, no code fences.',
-    'Fields: title (short, evocative, the station\'s language), seconds (the length this song',
-    'wants, 30-300; a punk track is shorter than a ballad), caption (a comma-separated',
+    'Fields: title (short, evocative, the station\'s language), caption (a comma-separated',
     'production description: genre, instruments, mood, vocal type, production era — never an',
-    'artist name and never a conflicting pair like "lo-fi, hi-fi"), lyrics (with [Verse] and',
+    'artist name and never a conflicting pair like "lo-fi, hi-fi"), seconds (the length this',
+    `song wants, between ${min} and ${max} seconds inclusive -- a punk track is shorter than a`,
+    'ballad, so choose per song and stay inside that band), lyrics (with [Verse] and',
     '[Chorus] tags; keep lines short; if the station is instrumental use exactly',
     '[Instrumental]), bpm (integer 30-300), key (e.g. "D minor"), lang (ISO code, "none" if',
     'instrumental). Write original words; never quote an existing song.',
@@ -368,7 +389,7 @@ export function parsePlannedSong(text: string): PlannedSong | null {
     const secondsRaw = Number(raw.seconds)
     return {
       title: title.slice(0, 80),
-      seconds: Number.isFinite(secondsRaw) ? Math.min(300, Math.max(30, Math.round(secondsRaw))) : 0,
+      seconds: Number.isFinite(secondsRaw) ? Math.round(secondsRaw) : 0,
       caption: caption.slice(0, 600),
       lyrics: lyrics.slice(0, 4000),
       bpm: Number.isFinite(bpmRaw) ? Math.min(300, Math.max(30, Math.round(bpmRaw))) : 100,
@@ -391,7 +412,7 @@ export async function planSong(
   const [provider, ...rest] = cfg.planner.split(':')
   const model = rest.join(':')
   if (!provider || model === '') return null
-  const { system, user } = plannerPrompt(station, avoid)
+  const { system, user } = plannerPrompt(station, avoid, cfg.durationMin, cfg.durationMax)
   try {
     let text = ''
     const stream = llm.stream({
@@ -537,7 +558,12 @@ export async function readRadioState(cfg: RadioConfig): Promise<RadioPayload> {
       stations: [...new Set(tracks.map(t => t.station))].filter(s => s !== 'unknown'),
     },
     stations: Object.keys(CAPTION_POOL),
-    settings: { planner: await effectivePlanner(cfg), musicModel: cfg.musicModel, durationOverride: cfg.durationOverride },
+    settings: {
+      planner: await effectivePlanner(cfg),
+      musicModel: cfg.musicModel,
+      durationMin: cfg.durationMin,
+      durationMax: cfg.durationMax,
+    },
   }
 }
 
@@ -612,10 +638,11 @@ export async function generateTrack(
   const lyrics = planned?.lyrics ?? '[Instrumental]'
   const captionWithTempo = `${caption}, ${bpm} bpm, ${key}`
 
-  // Length: the owner's override wins, else the planner's judgement, else the config default.
-  const seconds = cfg.durationOverride > 0
-    ? cfg.durationOverride
-    : (planned?.seconds !== undefined && planned.seconds > 0 ? planned.seconds : cfg.duration)
+  // Length: the planner chooses inside the owner's band; without a planner the band is still
+  // honoured (a random point in it), so songs vary even while the planner is dormant.
+  const seconds = planned !== null && planned.seconds > 0
+    ? Math.min(cfg.durationMax, Math.max(cfg.durationMin, planned.seconds))
+    : cfg.durationMin + Math.floor(Math.random() * (cfg.durationMax - cfg.durationMin + 1))
 
   const submitted = await acePost<{ task_id: string }>(cfg, '/release_task', {
     prompt: captionWithTempo,

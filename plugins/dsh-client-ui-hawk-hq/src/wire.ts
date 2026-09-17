@@ -266,6 +266,8 @@ export interface RadioPayload {
   readonly settings: {
     readonly planner: string
     readonly musicModel: string
-    readonly durationOverride: number
+    /** The band the planner picks each song's length inside. */
+    readonly durationMin: number
+    readonly durationMax: number
   }
 }

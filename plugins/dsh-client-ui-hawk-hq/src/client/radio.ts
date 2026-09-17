@@ -24,16 +24,11 @@ import type { RadioPayload } from '../wire.ts'
 import { API, fmtGiB } from './util.ts'
 
 /**
- * How long before the end of a track the next one starts being written.
- *
- * Not a constant: the renderer spends about a tenth of the song's length to make it, so a
- * four-minute song needs a longer head start than a two-minute one. 20% of the song, never
- * less than 30 seconds.
+ * On-air generation, the owner's rule (2026-09-17): the moment a song starts playing, the one
+ * after it starts being written. Exactly one song is ever in flight, and no maths about song
+ * length, render time or queue depth is needed -- which is why this replaced a countdown
+ * trigger: "we either need to calculate it and act accordingly etc but it will make a mess".
  */
-function leadSeconds(duration: number): number {
-  if (!Number.isFinite(duration) || duration <= 0) return 30
-  return Math.max(30, Math.round(duration * 0.2))
-}
 
 /** `m:ss` for a duration in seconds. */
 function fmtTime(seconds: number): string {
@@ -109,10 +104,11 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // radio songs until the restart lands. Library material never qualifies either way.
   const playable = tracks.filter(t =>
     (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true)
-  const settings = radio?.settings ?? { planner: '', musicModel: '', durationOverride: 0 }
+  const settings = radio?.settings ?? { planner: '', musicModel: '', durationMin: 90, durationMax: 210 }
   const planner = typeof settings.planner === 'string' ? settings.planner : ''
   const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
-  const durationOverride = typeof settings.durationOverride === 'number' ? settings.durationOverride : 0
+  const durationMin = typeof settings.durationMin === 'number' ? settings.durationMin : 90
+  const durationMax = typeof settings.durationMax === 'number' ? settings.durationMax : 210
   const stations = Array.isArray(radio?.stations) ? radio.stations : []
   const stats = radio?.stats ?? null
 
@@ -146,7 +142,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
 
   useEffect(() => { void loadModels() }, [loadModels])
 
-  const choose = useCallback(async (patch: { planner?: string; musicModel?: string; durationOverride?: number }): Promise<void> => {
+  const choose = useCallback(async (patch: { planner?: string; musicModel?: string; durationMin?: number; durationMax?: number }): Promise<void> => {
     try {
       await post('settings', patch)
       await refresh()
@@ -300,14 +296,17 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     h('audio', {
       ref: audio,
       preload: 'none',
-      onPlay: () => { wantPlay.current = true; setPlaying(true) },
+      onPlay: () => {
+        wantPlay.current = true
+        setPlaying(true)
+        // The radio is on air: make sure the next song exists while this one plays.
+        ensureAhead()
+      },
       onPause: () => { wantPlay.current = false; setPlaying(false) },
       onTimeUpdate: (event: SyntheticEvent<HTMLAudioElement>) => {
         const el = event.currentTarget
         setPos(el.currentTime)
-        const total = el.duration || 0
-        const remaining = total - el.currentTime
-        if (remaining > 0 && remaining <= leadSeconds(total)) ensureAhead()
+        setPos(el.currentTime)
       },
       onLoadedMetadata: (event: SyntheticEvent<HTMLAudioElement>) => setDur(event.currentTarget.duration || 0),
       onEnded: () => { step(1) },
@@ -443,18 +442,27 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                   : null),
 
               h('div', { className: 'hhq-radio-col hhq-radio-col-right' },
-                h('div', { className: 'hhq-radio-lab' }, 'Song length'),
-                h('div', { className: 'hhq-radio-sel' },
-                  h('select', {
-                    value: String(durationOverride),
-                    title: 'Auto lets the planner choose a length per song',
-                    onChange: (event: ChangeEvent<HTMLSelectElement>) => {
-                      void choose({ durationOverride: Number(event.target.value) })
-                    },
-                  },
-                    h('option', { key: 'auto', value: '0' }, 'Auto — the planner decides'),
-                    [45, 60, 90, 120, 180, 240].map(v => h('option', { key: String(v), value: String(v) },
-                      `${Math.floor(v / 60)}:${String(v % 60).padStart(2, '0')}`)))),
+                h('div', { className: 'hhq-radio-lab' },
+                  `Song length · the planner picks inside ${fmtTime(durationMin)}–${fmtTime(durationMax)}`),
+                h('div', { className: 'hhq-radio-row' },
+                  h('div', { className: 'hhq-radio-sel' }, 'min',
+                    h('select', {
+                      value: String(durationMin),
+                      onChange: (event: ChangeEvent<HTMLSelectElement>) => {
+                        const v = Number(event.target.value)
+                        void choose(v > durationMax ? { durationMin: v, durationMax: v } : { durationMin: v })
+                      },
+                    }, [45, 60, 90, 120, 150, 180, 240].map(v =>
+                      h('option', { key: String(v), value: String(v) }, fmtTime(v))))),
+                  h('div', { className: 'hhq-radio-sel' }, 'max',
+                    h('select', {
+                      value: String(durationMax),
+                      onChange: (event: ChangeEvent<HTMLSelectElement>) => {
+                        const v = Number(event.target.value)
+                        void choose(v < durationMin ? { durationMin: v, durationMax: v } : { durationMax: v })
+                      },
+                    }, [60, 90, 120, 150, 180, 240, 300].map(v =>
+                      h('option', { key: String(v), value: String(v) }, fmtTime(v)))))),
                 h('div', { className: 'hhq-radio-lab' }, `Up next · ${playable.length} ready`),
                 ...playable.slice(0, 4).map((t, i) => h('div', { key: t.id, className: 'hhq-radio-qi' },
                   h('span', { className: 'hhq-radio-n' }, String(i + 1)),
