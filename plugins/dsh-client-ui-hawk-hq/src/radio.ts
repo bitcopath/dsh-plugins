@@ -318,8 +318,15 @@ print(json.dumps(uniq))
   // appears the day it is installed, with no change here.
   const music: ModelChoice[] = []
   const seenMusic = new Set<string>()
-  const addMusic = (id: string): void => {
-    if (id !== '' && !seenMusic.has(id)) { seenMusic.add(id); music.push({ provider: 'acestep', id, name: id, music: true }) }
+  // Key on the model id and use the id as the value: the renderer reports a display name
+  // ("ACE-Step acestep-v15-turbo") while /health reports the id ("acestep-v15-turbo"), and
+  // deduping on the display string listed the same model twice (seen 2026-09-17).
+  const addMusic = (id: string, name?: string): void => {
+    const key = id.trim()
+    if (key !== '' && !seenMusic.has(key)) {
+      seenMusic.add(key)
+      music.push({ provider: 'acestep', id: key, name: (name ?? key).trim(), music: true })
+    }
   }
   try {
     const res = await fetch(`${cfg.aceBase}/v1/models`, {
@@ -330,7 +337,7 @@ print(json.dumps(uniq))
       const body = await res.json() as { data?: unknown }
       for (const row of Array.isArray(body.data) ? body.data : []) {
         const item = row as { name?: string; id?: string }
-        addMusic(String(item.name ?? item.id ?? ''))
+        addMusic(String(item.id ?? item.name ?? ''), String(item.name ?? ''))
       }
     }
   } catch { /* fall through to the health read below */ }
