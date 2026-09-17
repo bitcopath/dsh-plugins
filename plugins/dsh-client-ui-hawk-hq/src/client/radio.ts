@@ -65,6 +65,13 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   /** Ids this browser session generated — the rotation fallback for an older host half. */
   const sessionWrites = useRef<Set<string>>(new Set())
   /**
+   * Ids this session has already started playing. A reserved song stays in the session's chain (see
+   * `playable`) only until it has been heard once, so it can finish its airing but can never come
+   * back — the radio's rule is "listened and gone", and a reserved song must not be replayed just
+   * because it is no longer in the live folder.
+   */
+  const played = useRef<Set<string>>(new Set())
+  /**
    * True while the radio is meant to be ON AIR — a USER decision, changed only by the play,
    * pause and stop buttons.
    *
@@ -112,10 +119,18 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   // `sessionWrites` covers the window where this client is newer than its host: the old host
   // does not emit the `radio` marker yet, so the ids this browser generated are treated as
   // radio songs until the restart lands. Library material never qualifies either way.
-  // The LIVE pipeline only: a starred song is reserved, not radio material, so it leaves the rotation
-  // (and the "ready" count) the moment it is starred — owner's rule, 2026-09-17.
+  //
+  // A star means RESERVE (owner's rule, 2026-09-17): the live copy is marked and the rotation drops
+  // it. It must still be PLAYABLE for the rest of this airing, though — measured live on 2026-09-17
+  // 15:55, starring the song that was playing removed it from this list, `step()` then had nothing to
+  // advance to when the song ended, and the radio went off air mid-session. Reserved songs therefore
+  // stay in the session's own chain of songs, while the "ready" count excludes them (the radio has
+  // nothing ready any more — the song is reserved).
   const playable = tracks.filter(t =>
-    (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true && t.stars === 0)
+    (t.radio === true || sessionWrites.current.has(t.id)) && t.never !== true
+    && (t.stars === 0 || (sessionWrites.current.has(t.id) && !played.current.has(t.id))))
+  /** How many songs are actually available to the ROTATION — reserved ones do not count. */
+  const ready = playable.filter(t => t.stars === 0).length
 
   /**
    * The queue: songs this session wrote that have not been heard yet and are not playing now.
@@ -226,24 +241,33 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   }, [tracks])
 
   /**
-   * Step to the next track: the queued song if one was written ahead, otherwise newest-first order,
-   * skipping anything marked never. Advancing is also the moment the finished song is swept.
+   * Step to the next track: the queued song if one was written ahead, otherwise the next one in
+   * newest-first order — but NEVER by wrapping around, because a song this radio has already played
+   * must not come back (its whole rule is "listened and gone"). Advancing is also the moment the
+   * finished song is swept.
    */
   const step = useCallback((delta: number): void => {
     if (playable.length === 0) return
     const index = currentId === null ? -1 : playable.findIndex(t => t.id === currentId)
     const next = delta > 0
-      ? (queued[0] ?? playable[(index + delta + playable.length + 1) % playable.length])
-      : playable[(index + delta + playable.length + 1) % playable.length]
+      ? (queued[0] ?? (index >= 0 ? playable[index + 1] : playable[0]))
+      : (index > 0 ? playable[index - 1] : current === null ? playable[0] : undefined)
     if (next) {
+      played.current.add(next.id)
       setCurrentId(next.id)
       setPos(0)
       void post('rate', { id: next.id, played: true }).catch(() => undefined)
       // The song that just ended is deleted now unless its reserved copy exists in `starred`; the
       // one that is starting is the only thing this sweep must not touch.
       void prune([next.id])
+    } else {
+      // Nothing left ahead: stop honestly instead of looping back through songs already heard.
+      wantPlay.current = false
+      audio.current?.pause()
+      setPlaying(false)
+      void prune([])
     }
-  }, [currentId, playable, queued, prune])
+  }, [currentId, playable, queued, prune, current])
 
   // Point the audio element at the current track; play only when asked, because
   // autoplay without a gesture is blocked by the browser anyway.
@@ -259,6 +283,11 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     if (!el.src.endsWith(want)) {
       el.src = want
       el.load()
+      // Reset the bar BEFORE the new file reports its own length. Without this the bar keeps the
+      // PREVIOUS song's position while `dur` already belongs to the new one, so it renders a
+      // position the song has not reached (reported by the owner, 2026-09-17: "0:08 / 4:12" with the
+      // handle three-quarters across). Position and length must always describe the same song.
+      setPos(0)
       setDur(current.seconds || 0)
       // On air: a track change is not a reason to fall silent.
       if (wantPlay.current) {
@@ -286,6 +315,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     if (el === null) return
     if (current === null) {
       if (playable.length === 0) { void goLive(); return }
+      played.current.add(playable[0]!.id)
       setCurrentId(playable[0]!.id)
       window.setTimeout(() => { void el.play().catch(() => setError('playback blocked')) }, 60)
       return
@@ -322,6 +352,22 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     setBusy('writing the next song…')
     void write(current?.station ?? station).finally(() => setBusy(null))
   }, [busy, queued, current, station, write])
+
+  /**
+   * Keep the next song written while the radio is on air.
+   *
+   * `ensureAhead()` otherwise only fires when a song STARTS (the audio element's `play` event), and
+   * that event does not fire again for a song the browser starts programmatically during an advance.
+   * Measured live on 2026-09-17: after the owner starred the song that was playing, nothing was left
+   * in the queue, no `play` event arrived for the next song, and the radio ran out of material — the
+   * third song was never written. Watching the state on air and writing when the queue is empty closes
+   * that hole without changing the owner's rule: exactly one song ahead, never two.
+   */
+  useEffect(() => {
+    if (!wantPlay.current) return
+    if (queued.length >= 1 || busy !== null) return
+    ensureAhead()
+  }, [queued.length, busy, ensureAhead])
 
 /**
    * On-air watchdog.
@@ -448,7 +494,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   }
 
   const health = radio?.health ?? null
-  const pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0
+  const pct = dur > 0 ? Math.max(0, Math.min(100, (pos / dur) * 100)) : 0
   const title = current?.title
     ?? (goingLive ? 'Going live…' : health?.up === true ? `${station}` : 'Radio offline')
   // The rail carries information only — the station in words, the song's name, where we are
@@ -468,6 +514,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       onPlay: () => {
         wantPlay.current = true
         setPlaying(true)
+        if (currentId !== null) played.current.add(currentId)
         // The radio is on air: make sure the next song exists while this one plays.
         ensureAhead()
       },
@@ -514,8 +561,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       busy !== null
         ? h('span', { className: 'hhq-radio-busy' }, busy)
         : h('span', { className: playing ? 'hhq-radio-ok' : 'hhq-radio-down' },
-            playing ? `● ON AIR · ${playable.length} ready`
-              : health?.up === true ? `● off air · ${playable.length} ready` : '● renderer down'),
+            playing ? `● ON AIR · ${ready} ready`
+              : health?.up === true ? `● off air · ${ready} ready` : '● renderer down'),
       (() => {
         // Once starred, the song has left the live payload and the card names the reservation
         // instead: a snapshot is the difference between an empty card and a card that still
