@@ -103,6 +103,16 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
    */
   const [reservedNow, setReservedNow] = useState<{ readonly id: string; readonly title: string } | null>(null)
   const [shareBusy, setShareBusy] = useState<string | null>(null)
+  /**
+   * Silence, not stop (owner, 2026-09-17: *"I get a phone call and need to silence it for a moment.
+   * The sound will go silent but radio continue"*). It mutes the audio element and nothing else —
+   * playback keeps running, the position keeps moving, the next song is still written and the advance
+   * still happens — so a phone call costs no airtime. Remembered across a refresh because a call
+   * outlives one; never sent to the host, because it belongs to this browser's speakers only.
+   */
+  const [muted, setMuted] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('hhq-radio-muted') === '1' } catch { return false }
+  })
   const lockUntil = useRef(0)
 
   // The client bundle is re-served on every page load while the host bundle only changes on a
@@ -396,6 +406,14 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     return () => window.clearInterval(timer)
   }, [current])
 
+  // Silence is a property of the element, so it must be re-applied after every src change (a new
+  // song re-creates the media session) and remembered for the next page load.
+  useEffect(() => {
+    const el = audio.current
+    if (el !== null) el.muted = muted
+    try { window.localStorage.setItem('hhq-radio-muted', muted ? '1' : '0') } catch { /* private mode */ }
+  }, [muted, current])
+
   // One ticker for the lockout countdown; it does nothing while unlocked.
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -483,6 +501,9 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     await refresh()
   }, [current, refresh])
 
+  /** Silence / unsilence. It never touches play state: the radio keeps running either way. */
+  const toggleMute = useCallback((): void => { setMuted(value => !value) }, [])
+
   const generate = useCallback(async (count: number): Promise<void> => {
     setBusy(count > 1 ? `writing ${count} ahead…` : 'rendering…')
     await write(station, count)
@@ -567,6 +588,15 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
         : h('span', { className: playing ? 'hhq-radio-ok' : 'hhq-radio-down' },
             playing ? `● ON AIR · ${ready} ready`
               : health?.up === true ? `● off air · ${ready} ready` : '● renderer down'),
+      h('button', {
+        type: 'button',
+        className: `hhq-radio-mute${muted ? ' on' : ''}`,
+        disabled: current === null,
+        onClick: toggleMute,
+        title: muted
+          ? 'Silenced — the radio is still playing, you just cannot hear it. Click to unsilence'
+          : 'Silence the radio without stopping it (for a phone call): the song keeps playing and the next one still arrives',
+      }, muted ? '🔇' : '🔊'),
       (() => {
         // Once starred, the song has left the live payload and the card names the reservation
         // instead: a snapshot is the difference between an empty card and a card that still
@@ -655,7 +685,15 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                       // Stopping is going off air: the live song dies here, its reserved copy does not.
                       void prune([])
                     },
-                  }, '■ Stop')),
+                  }, '■ Stop'),
+                  h('button', {
+                    type: 'button',
+                    className: `hhq-radio-chip${muted ? ' on' : ''}`,
+                    title: muted
+                      ? 'Silenced — playback continues; click to unsilence'
+                      : 'Silence without stopping: the song keeps playing silently and the next one still arrives',
+                    onClick: toggleMute,
+                  }, muted ? '🔇 silenced' : '🔊 silence')),
 
                 h('div', { className: 'hhq-radio-rate' },
                   h('span', { className: 'hhq-radio-lab' }, 'Reserve'),

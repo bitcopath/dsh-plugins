@@ -400,6 +400,17 @@ export const CSS_TEXT = `
   padding: 0 1px;
 }
 .hhq-radio-star.on { color: #f5b942; }
+/* Silence switch (owner, 2026-09-17): same weight as the star, lit while it is engaged. */
+.hhq-radio-mute {
+  border: none;
+  background: transparent;
+  color: #4b5057;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.hhq-radio-mute.on { color: #7fb2ff; }
 .hhq-radio-chip {
   font-size: 10.5px;
   padding: 3px 7px;
@@ -410,6 +421,7 @@ export const CSS_TEXT = `
   cursor: pointer;
 }
 .hhq-radio-chip-bad { color: #ffb4b8; border-color: #5a2d31; }
+.hhq-radio-chip.on { color: #7fb2ff; border-color: #33507f; }
 .hhq-radio-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .hhq-radio-sel {
   flex: 1.3;
