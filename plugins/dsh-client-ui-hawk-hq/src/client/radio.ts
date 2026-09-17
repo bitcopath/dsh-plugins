@@ -37,12 +37,6 @@ function fmtTime(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
-/** Five characters, filled to `n`. */
-function starGlyphs(n: number): string {
-  const filled = Math.max(0, Math.min(5, n))
-  return '★'.repeat(filled) + '☆'.repeat(5 - filled)
-}
-
 /** One selectable model from the host's catalogue. */
 interface ModelChoice {
   readonly provider: string
@@ -94,9 +88,14 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const [goingLive, setGoingLive] = useState(false)
   /** On-Air lockout: a misclick must not flip the switch twice (owner, 2026-09-17). */
   const [lockLeft, setLockLeft] = useState(0)
-  /** The link currently shown in the modal, if any. */
-  const [shareUrl, setShareUrl] = useState<string | null>(null)
-  const [shareBusy, setShareBusy] = useState(false)
+  /** Which song's link the modal shows — a reserved row shares, not only the live song. */
+  const [shareId, setShareId] = useState<string | null>(null)
+  /**
+   * The song just starred, kept after it leaves the live payload so the card can still name it and
+   * still share it. Cleared when another track is picked up or the radio goes off air.
+   */
+  const [reservedNow, setReservedNow] = useState<{ readonly id: string; readonly title: string } | null>(null)
+  const [shareBusy, setShareBusy] = useState<string | null>(null)
   const lockUntil = useRef(0)
 
   // The client bundle is re-served on every page load while the host bundle only changes on a
@@ -121,7 +120,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   /**
    * The queue: songs this session wrote that have not been heard yet and are not playing now.
    *
-   * Five-star favourites stay in the library forever, so "how many tracks sit after the current one"
+   * A reserved song leaves the live payload the moment it is starred, so "how many tracks sit after
+   * the current one"
    * is the wrong question — a keeper would look like a queued song and the radio would stop writing
    * ahead. The queue is only ever what was written for this session (owner's rule, 2026-09-17:
    * exactly one song ahead, never more). A song deleted by the sweep is gone from `tracks`, so it
@@ -135,8 +135,17 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const durationMax = typeof settings.durationMax === 'number' ? settings.durationMax : 0
   const autoBand = durationMin === 0 || durationMax === 0
   const stations = Array.isArray(radio?.stations) ? radio.stations : []
-  /** Only the songs the owner starred — the single list the modal shows, and what we share. */
-  const starred = tracks.filter(t => t.stars >= 1)
+  /**
+   * The RESERVED list — and only that (owner's rule, 2026-09-17: *"Radio looks at live, our list
+   * looks at starred"*). It comes from the host's own `starred` folder, never from filtering the live
+   * tracks: a reserved song has left the live folder, so a filter over `tracks` would show an empty
+   * list the moment it was swept.
+   *
+   * `radio.starred ?? []` is the guard that matters when this client is newer than its host (the host
+   * half only changes on a `dsh web` restart): an older payload has no such key, and a throw here
+   * unmounts the whole sidebar seat — GPU cards included. That is a measured failure, not a theory.
+   */
+  const starred = Array.isArray(radio?.starred) ? radio.starred : []
   const stats = radio?.stats ?? null
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -181,10 +190,12 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   /**
    * Radio means radio: you listen to it and it is gone (owner's rule, 2026-09-17).
    *
-   * Sweeps every song the radio wrote that has no five stars, except the ids in `keep`. Called when
-   * the next song starts (`keep` = the song now playing, so the one that just ended dies) and when
-   * the owner goes off air (`keep` = nothing, so the current one dies too). An older host has no
-   * prune route: the catch keeps that harmless — nothing is swept, and nothing breaks.
+   * Sweeps every song the radio wrote except the ids in `keep` — the rating exemption is gone, because
+   * a starred song is now a COPY in the reserved folder rather than a rated live file. Called when the
+   * next song starts (`keep` = the song now playing, so the one that just ended dies) and when the
+   * owner goes off air (`keep` = nothing, so the current one dies too). A reserved copy is never in
+   * this folder, so it cannot be reached from here. An older host has no prune route: the catch keeps
+   * that harmless — nothing is swept, and nothing breaks.
    */
   const prune = useCallback(async (keep: readonly string[]): Promise<void> => {
     try {
@@ -228,8 +239,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
       setCurrentId(next.id)
       setPos(0)
       void post('rate', { id: next.id, played: true }).catch(() => undefined)
-      // The song that just ended is deleted now unless it earned five stars; the one that is
-      // starting is the only thing this sweep must not touch.
+      // The song that just ended is deleted now unless its reserved copy exists in `starred`; the
+      // one that is starting is the only thing this sweep must not touch.
       void prune([next.id])
     }
   }, [currentId, playable, queued, prune])
@@ -288,8 +299,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     }
   }, [current, playable, goLive])
 
-  // After a cold start, auto-play the first track that arrived — the one just written, never an old
-  // five-star favourite that happens to sit in the library.
+  // After a cold start, auto-play the first track that arrived — the one just written. Reserved songs
+  // are not in this payload at all, so an old favourite can never be picked up here.
   useEffect(() => {
     if (!goingLive) return
     const first = queued[0] ?? playable[0]
@@ -351,8 +362,8 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
 
   /**
    * On air: write a NEW song and play it when it lands (owner's rule, 2026-09-17 — "every new air means
-   * a new song"). It never resumes an old one: the library keeps only five-star favourites, which are
-   * for other work, not for the radio's rotation.
+   * a new song"). It never resumes an old one: the live folder holds only what this session wrote, and
+   * reserved songs live in their own folder, for other work rather than for the radio's rotation.
    */
   const goOnAir = useCallback((): void => {
     if (lockLeft > 0) return
@@ -360,24 +371,59 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     if (el === null) return
     lock()
     wantPlay.current = true
+    // A new air means a new song, so the reservation snapshot of the last one is done with.
+    setReservedNow(null)
+    setShareId(null)
     void goLive()
   }, [lockLeft, goLive, lock])
 
-  /** Off air: stop immediately, and sweep the current song unless it earned five stars. */
+  /** Off air: stop immediately, and sweep the live song — a reserved copy survives untouched. */
   const goOffAir = useCallback((): void => {
     if (lockLeft > 0) return
     lock()
     wantPlay.current = false
     audio.current?.pause()
     setPlaying(false)
+    setReservedNow(null)
+    setShareId(null)
     void prune([])
   }, [lockLeft, lock, prune])
 
-  const rate = useCallback(async (stars: number): Promise<void> => {
+  /**
+   * Star means RESERVE (owner's rule, 2026-09-17: *"Star means reserve it but get it out of the radio
+   * live pipeline"*). This posts `reserve`, not a rating: the host copies the song into the reserved
+   * folder, marks the live copy, and the radio's rotation drops it on the next poll while the song
+   * that is playing keeps playing to its end.
+   *
+   * The snapshot is kept because reserving REMOVES the song from the live payload — without it the
+   * card would lose the title (and the share action) the instant the owner starred what he is hearing.
+   */
+  const reserve = useCallback(async (): Promise<void> => {
     if (current === null) return
-    try { await post('rate', { id: current.id, stars }) } catch (err) { setError(String(err).slice(0, 120)) }
+    const snapshot = { id: current.id, title: current.title }
+    try {
+      await post('reserve', { id: current.id })
+      setReservedNow(snapshot)
+    } catch (err) { setError(String(err).slice(0, 120)) }
     await refresh()
   }, [current, refresh])
+
+  /** Unstar: the reserved copy is deleted. That is the way to get rid of something — see the host. */
+  const unstar = useCallback(async (id: string): Promise<void> => {
+    try { await post('unstar', { id }) } catch (err) { setError(String(err).slice(0, 120)) }
+    if (reservedNow?.id === id) setReservedNow(null)
+    await refresh()
+  }, [refresh, reservedNow])
+
+  /** Publish one song and show its link — the same action for the live song and a reserved row. */
+  const share = useCallback(async (id: string): Promise<void> => {
+    setShareBusy(id)
+    try {
+      await post('share', { id })
+      await refresh()
+      setShareId(id)
+    } catch (err) { setError(String(err).slice(0, 160)) } finally { setShareBusy(null) }
+  }, [refresh])
 
   const neverAgain = useCallback(async (): Promise<void> => {
     if (current === null) return
@@ -471,15 +517,21 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
             playing ? `● ON AIR · ${playable.length} ready`
               : health?.up === true ? `● off air · ${playable.length} ready` : '● renderer down'),
       (() => {
-        const starredNow = (current?.stars ?? 0) >= 1
+        // Once starred, the song has left the live payload and the card names the reservation
+        // instead: a snapshot is the difference between an empty card and a card that still
+        // reads the title right after the owner pressed the star.
+        const shown = current ?? reservedNow
         return h('button', {
           type: 'button',
-          className: `hhq-radio-star${starredNow ? ' on' : ''}`,
-          disabled: current === null,
-          onClick: () => { void rate(starredNow ? 0 : 1) },
-          title: starredNow
-            ? 'Starred — it stays in your list. Click to unstar'
-            : 'Star it to keep it and put it in your list; unstarred songs are deleted as the radio moves on',
+          className: `hhq-radio-star${reservedNow?.id === shown?.id && shown !== null ? ' on' : ''}`,
+          disabled: shown === null,
+          onClick: () => {
+            if (reservedNow !== null && shown?.id === reservedNow.id) { void unstar(reservedNow.id); return }
+            void reserve()
+          },
+          title: reservedNow !== null && shown?.id === reservedNow.id
+            ? 'Reserved — it is out of the radio and kept in your list. Click to unstar (deletes the reserved copy)'
+            : 'Reserve it: it is copied out of the radio into your list and stops being radio material',
         }, '★')
       })()),
 
@@ -549,76 +601,75 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                       wantPlay.current = false
                       audio.current?.pause()
                       setPlaying(false)
-                      // Stopping is going off air: the song dies with the session unless it has five stars.
+                      // Stopping is going off air: the live song dies here, its reserved copy does not.
                       void prune([])
                     },
                   }, '■ Stop')),
 
                 h('div', { className: 'hhq-radio-rate' },
-                  h('span', { className: 'hhq-radio-lab' }, 'Keep'),
+                  h('span', { className: 'hhq-radio-lab' }, 'Reserve'),
                   (() => {
-                    const starredNow = (current?.stars ?? 0) >= 1
+                    const shown = current ?? reservedNow
+                    const isReserved = reservedNow !== null && shown?.id === reservedNow.id
                     return h('button', {
                       type: 'button',
-                      className: `hhq-radio-star${starredNow ? ' on' : ''}`,
-                      disabled: current === null,
-                      onClick: () => { void rate(starredNow ? 0 : 1) },
-                      title: starredNow
-                        ? 'Starred — kept in your list. Unstar and it dies with the session'
-                        : 'One star or none: starred songs are kept and shareable, the rest are deleted',
+                      className: `hhq-radio-star${isReserved ? ' on' : ''}`,
+                      disabled: shown === null,
+                      onClick: () => {
+                        if (isReserved) { void unstar(reservedNow.id); return }
+                        void reserve()
+                      },
+                      title: isReserved
+                        ? 'Reserved — out of the radio, kept in your list. Unstar deletes the reserved copy'
+                        : 'Star it to reserve it: copied to the reserved folder, gone from the radio as it moves on',
                     }, '★')
                   })(),
                   h('button', {
                     type: 'button',
                     className: 'hhq-radio-chip',
-                    disabled: shareBusy || current === null,
+                    disabled: shareBusy !== null || current === null,
                     title: 'Publish this song and get a link you can send to anyone',
-                    onClick: () => {
-                      if (current === null) return
-                      setShareBusy(true)
-                      void post('share', { id: current.id })
-                        .then(async () => {
-                          const res = await fetch(`${API}/radio`)
-                          const payload = await res.json() as RadioPayload
-                          setRadio(payload)
-                          const mine = (payload.tracks ?? []).find(t => t.id === current.id)
-                          setShareUrl(mine?.shareUrl ?? null)
-                        })
-                        .catch((err: unknown) => setError(String(err).slice(0, 160)))
-                        .finally(() => setShareBusy(false))
-                    },
-                  }, shareBusy ? 'sharing…' : '⇪ share'),
+                    onClick: () => { if (current !== null) void share(current.id) },
+                  }, shareBusy === current?.id ? 'sharing…' : '⇪ share'),
                   h('button', { type: 'button', className: 'hhq-radio-chip', onClick: () => { void generate(1) } }, '♻ more like this'),
                   h('button', { type: 'button', className: 'hhq-radio-chip hhq-radio-chip-bad', onClick: () => { void neverAgain() } }, '✕ never again')),
 
-                (shareUrl !== null || current?.shareUrl !== undefined)
-                  ? (() => {
-                      const link = shareUrl ?? current?.shareUrl ?? ''
-                      return h('div', { className: 'hhq-radio-share' },
-                        h('div', { className: 'hhq-radio-lab' }, 'Share link — anyone with this can listen'),
-                        h('input', { className: 'hhq-radio-share-input', readOnly: true, value: link,
-                          onFocus: (event: React.FocusEvent<HTMLInputElement>) => event.currentTarget.select() }),
-                        h('div', { className: 'hhq-radio-row' },
-                          h('button', {
-                            type: 'button', className: 'hhq-radio-btn',
-                            onClick: () => {
-                              void navigator.clipboard.writeText(link)
-                                .then(() => setError('link copied'))
-                                .catch(() => setError('copy failed — select the field instead'))
-                            },
-                          }, 'Copy'),
-                          h('button', {
-                            type: 'button', className: 'hhq-radio-btn hhq-radio-btn-stop',
-                            title: 'Kill this link: the song stays in your library, the link stops working',
-                            onClick: () => {
-                              if (current === null) return
-                              void post('revoke', { id: current.id })
-                                .then(() => { setShareUrl(null); return refresh() })
-                                .catch((err: unknown) => setError(String(err).slice(0, 160)))
-                            },
-                          }, 'Revoke')))
-                    })()
-                  : null,
+                (() => {
+                  // One link block for both cases: the song on air and a reserved row. The link comes
+                  // from the payload (the sidecar that actually holds it), so a refresh never loses it.
+                  const shareOf = (id: string | null): string | undefined =>
+                    id === null ? undefined
+                      : id === current?.id ? current?.shareUrl
+                        : starred.find(t => t.id === id)?.shareUrl
+                  const linkId = (shareId !== null && shareOf(shareId) !== undefined ? shareId : null)
+                    ?? (current?.shareUrl !== undefined ? current.id : null)
+                    ?? starred.find(t => t.shareUrl !== undefined)?.id ?? null
+                  const link = shareOf(linkId)
+                  if (link === undefined) return null
+                  return h('div', { className: 'hhq-radio-share' },
+                    h('div', { className: 'hhq-radio-lab' }, 'Share link — anyone with this can listen'),
+                    h('input', { className: 'hhq-radio-share-input', readOnly: true, value: link,
+                      onFocus: (event: React.FocusEvent<HTMLInputElement>) => event.currentTarget.select() }),
+                    h('div', { className: 'hhq-radio-row' },
+                      h('button', {
+                        type: 'button', className: 'hhq-radio-btn',
+                        onClick: () => {
+                          void navigator.clipboard.writeText(link)
+                            .then(() => setError('link copied'))
+                            .catch(() => setError('copy failed — select the field instead'))
+                        },
+                      }, 'Copy'),
+                      h('button', {
+                        type: 'button', className: 'hhq-radio-btn hhq-radio-btn-stop',
+                        title: 'Kill this link: the song stays where it is, the link stops working',
+                        onClick: () => {
+                          if (linkId === null) return
+                          void post('revoke', { id: linkId })
+                            .then(() => { setShareId(null); return refresh() })
+                            .catch((err: unknown) => setError(String(err).slice(0, 160)))
+                        },
+                      }, 'Revoke')))
+                })(),
                 h('div', { className: 'hhq-radio-row' },
                   h('div', { className: 'hhq-radio-sel' }, 'Station',
                     h('select', {
@@ -633,7 +684,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     onClick: () => { void generate(10) },
                   }, busy ?? 'write 10 ahead')),
                 h('div', { className: 'hhq-radio-hint' },
-                  `Play takes the radio on air: it writes a new song, plays it, and writes the next one before this one ends. Songs written this way are kept in the library forever; “write 10 ahead” fills the queue up front.`),
+                  `Play takes the radio on air: it writes a new song, plays it, and writes the next one before this one ends. Each song is deleted as the radio moves past it — press ★ on one you want to keep and it is reserved, out of the radio, into your Starred list.`),
 
                 current?.lyrics != null
                   ? h('details', { className: 'hhq-radio-lyrics' },
@@ -669,14 +720,28 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     }, [0, 180, 240, 270, 300, 330, 360].map(v =>
                       h('option', { key: String(v), value: String(v) },
                         v === 0 ? 'auto (station band)' : fmtTime(v)))))),
-                // Owner, 2026-09-17: the queue list, the learning block and every non-five-star
-                // history entry were cut from this modal. What remains is the one list he asked
-                // for -- the songs he gave five stars -- and nothing else.
+                // The one list the modal shows is the RESERVED folder (owner's rule, 2026-09-17:
+                // "our list looks at starred"). It is the host's `starred` array, not a filter over
+                // the live tracks — a reserved song has already left the live folder. Each row is a
+                // share target, and one ★ per row (the five-star scale is gone).
                 ...starred.length > 0
                   ? [
                       h('div', { className: 'hhq-radio-lab' }, `Starred · ${starred.length}`),
                       ...starred.slice(0, 10).map(t => h('div', { key: t.id, className: 'hhq-radio-hrow' },
                         h('span', { className: 'hhq-radio-qi-t' }, t.title),
+                        h('button', {
+                          type: 'button',
+                          className: 'hhq-radio-chip',
+                          disabled: shareBusy !== null,
+                          title: 'Publish this reserved song and get a link you can send to anyone',
+                          onClick: () => { void share(t.id) },
+                        }, shareBusy === t.id ? 'sharing…' : '⇪ share'),
+                        h('button', {
+                          type: 'button',
+                          className: 'hhq-radio-chip hhq-radio-chip-bad',
+                          title: 'Unstar: delete the reserved copy. The radio never gets it back',
+                          onClick: () => { void unstar(t.id) },
+                        }, '✕'),
                         h('span', { className: 'hhq-radio-hrow-s' }, '★'))),
                     ]
                   : [])),

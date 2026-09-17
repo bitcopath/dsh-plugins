@@ -39,7 +39,7 @@ import type {
 import { compareVersions } from './semver.ts'
 import {
   effectivePlanner, generateTrack, loadRadioConfig, pruneUnstarred, rateTrack, readJsonBody, readModelCatalogue,
-  readRadioState, renderOnce, revokeTrack, saveRadioSettings, serveAudio, shareTrack,
+  readRadioState, renderOnce, reserveTrack, revokeTrack, saveRadioSettings, serveAudio, shareTrack, unstarTrack,
 } from './radio.ts'
 import type { LlmFace } from './radio.ts'
 
@@ -920,7 +920,42 @@ function makeHandler(
       if (pathname.startsWith(`${API_PREFIX}/radio/audio/`)) {
         if (!requireGet(req, res, pathname)) return
         const cfg = await loadRadioConfig()
-        serveAudio(req, res, cfg.library, decodeURIComponent(pathname.slice(`${API_PREFIX}/radio/audio/`.length)))
+        // Reserved folder FIRST: a starred song's live copy is swept, so `/starred` is the only
+        // place its audio is left. Reverse the order and the Starred list would play silence.
+        serveAudio(req, res, [cfg.starred, cfg.library],
+          decodeURIComponent(pathname.slice(`${API_PREFIX}/radio/audio/`.length)))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/reserve`) {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, errorBody('method-not-allowed', 'reserve is POST-only'))
+          return
+        }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ id?: string }>(req)
+        if (typeof body.id !== 'string' || body.id === '') {
+          sendJson(res, 400, errorBody('bad-request', 'id is required'))
+          return
+        }
+        // Star means reserve (owner's rule, 2026-09-17): copy into `starred/` and mark the live copy
+        // so the rotation drops it. The live file itself is swept when the song ends, not here.
+        await reserveTrack(cfg, body.id)
+        sendJson(res, 200, await readRadioState(cfg))
+        return
+      }
+      if (pathname === `${API_PREFIX}/radio/unstar`) {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, errorBody('method-not-allowed', 'unstar is POST-only'))
+          return
+        }
+        const cfg = await loadRadioConfig()
+        const body = await readJsonBody<{ id?: string }>(req)
+        if (typeof body.id !== 'string' || body.id === '') {
+          sendJson(res, 400, errorBody('bad-request', 'id is required'))
+          return
+        }
+        await unstarTrack(cfg, body.id)
+        sendJson(res, 200, await readRadioState(cfg))
         return
       }
       if (pathname === `${API_PREFIX}/radio/rate`) {

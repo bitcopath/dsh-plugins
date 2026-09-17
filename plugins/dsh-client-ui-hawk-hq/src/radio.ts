@@ -14,12 +14,17 @@
  *     working, so nothing ever starts a render without a request.
  *   - Ratings are files, not a database: `<id>.json` sits next to `<id>.mp3`, so
  *     the library stays portable and auditable by hand.
+ *   - Two folders, one pipeline (owner's rule, 2026-09-17): the LIVE folder
+ *     (`library`) is what the radio rotates and sweeps, and the RESERVED folder
+ *     (`starred`) holds what the owner starred. Starring copies the song out of
+ *     the live pipeline rather than rating it, so the live copy dies on the next
+ *     sweep and the reserved copy is the one that survives.
  */
 
 import { createReadStream } from 'node:fs'
-import { readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { RadioHealth, RadioPayload, RadioTrack } from './wire.ts'
 
@@ -28,6 +33,11 @@ export const RADIO_CONFIG = join(homedir(), '.config', 'hawk-radio', 'config.jso
 
 /** Default library location; overridden by the config file. */
 const DEFAULT_LIBRARY = join(homedir(), '.local', 'share', 'hawk-radio', 'library')
+
+/** The reserved folder, derived the same way from an overridden library. */
+function defaultStarredDir(library: string): string {
+  return join(dirname(library), 'starred')
+}
 
 /** Renderer default: the ai-server's ACE-Step service. */
 const DEFAULT_ACE_BASE = 'http://192.168.0.102:8001'
@@ -129,6 +139,12 @@ const TITLE_POOL: Readonly<Record<string, readonly string[]>> = {
 /** Everything the radio host half needs, resolved from config + environment. */
 export interface RadioConfig {
   readonly library: string
+  /**
+   * The reserved folder: songs the owner starred are copied here and leave the live
+   * pipeline (owner's rule, 2026-09-17). Defaults to the sibling `starred/` of `library`,
+   * so an existing install needs no config edit. Created on demand — it may not exist yet.
+   */
+  readonly starred: string
   readonly aceBase: string
   readonly aceKey: string
   /** Seconds per generated track. */
@@ -159,8 +175,10 @@ export async function loadRadioConfig(): Promise<RadioConfig> {
   const pick = (env: string, key: string, fallback: string): string =>
     process.env[env] ?? (typeof file[key] === 'string' ? file[key] as string : fallback)
   const dur = Number(process.env.HAWK_RADIO_DURATION ?? file.duration ?? 60)
+  const library = pick('HAWK_RADIO_LIBRARY', 'library', DEFAULT_LIBRARY)
   return {
-    library: pick('HAWK_RADIO_LIBRARY', 'library', DEFAULT_LIBRARY),
+    library,
+    starred: pick('HAWK_RADIO_STARRED', 'starred', defaultStarredDir(library)),
     aceBase: pick('HAWK_RADIO_ACE_BASE', 'aceBase', DEFAULT_ACE_BASE).replace(/\/+$/, ''),
     aceKey: pick('HAWK_RADIO_ACE_KEY', 'aceKey', ''),
     duration: Number.isFinite(dur) && dur >= 10 && dur <= 600 ? dur : 60,
@@ -670,10 +688,12 @@ export interface ShareConfig {
 export async function shareTrack(cfg: RadioConfig, share: ShareConfig, id: string): Promise<string> {
   if (share.shareBase === '') throw new Error('sharing is not configured (shareBase)')
   if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('bad track id')
-  const meta = await readSidecar(join(cfg.library, `${id}.json`)) as Partial<RadioTrack> & { shareUrl?: string }
-  const audio = join(cfg.library, `${id}.mp3`)
-  const info = await stat(audio).catch(() => null)
-  if (info === null) throw new Error('no audio for that song')
+  // A reserved song is deliberately absent from the live folder, so both folders are searched:
+  // sharing from the Starred list must upload the RESERVED copy (verified 2026-09-17).
+  const sidecar = await filePathFor(cfg, id, '.json')
+  const meta = await readSidecar(sidecar.path) as Partial<RadioTrack> & { shareUrl?: string }
+  const audio = await filePathFor(cfg, id, '.mp3')
+  if (!audio.present) throw new Error('no audio for that song')
 
   // Already shared: reuse the link so the owner never accumulates dead tokens.
   if (typeof meta.shareUrl === 'string' && meta.shareUrl !== '') {
@@ -696,22 +716,23 @@ export async function shareTrack(cfg: RadioConfig, share: ShareConfig, id: strin
   if (!created.ok) throw new Error(`share service refused the metadata (HTTP ${created.status})`)
   const { token, url } = await created.json() as { token: string; url: string }
 
-  const bytes = await readFile(audio)
+  const bytes = await readFile(audio.path)
   const uploaded = await fetch(`${share.shareBase}/api/share/${token}/audio`, {
     method: 'PUT', headers: { 'content-type': 'audio/mpeg', 'x-share-secret': share.shareSecret },
     body: bytes, signal: AbortSignal.timeout(60_000),
   })
   if (!uploaded.ok) throw new Error(`share service refused the audio (HTTP ${uploaded.status})`)
 
-  await writeFile(join(cfg.library, `${id}.json`),
-    JSON.stringify({ ...meta, shareUrl: url }, null, 1), 'utf8')
+  // The link is recorded in the sidecar that actually exists — the reserved one for a reserved song.
+  await writeFile(sidecar.path, JSON.stringify({ ...meta, shareUrl: url }, null, 1), 'utf8')
   return url
 }
 
 /** Kill a link: the service deletes the files, and we forget the URL. */
 export async function revokeTrack(cfg: RadioConfig, share: ShareConfig, id: string): Promise<void> {
   if (share.shareBase === '') throw new Error('sharing is not configured')
-  const path = join(cfg.library, `${id}.json`)
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('bad track id')
+  const path = (await filePathFor(cfg, id, '.json')).path
   const meta = await readSidecar(path) as Partial<RadioTrack> & { shareUrl?: string }
   const token = typeof meta.shareUrl === 'string' ? (meta.shareUrl.split('/s/')[1] ?? '') : ''
   if (token !== '') {
@@ -755,6 +776,91 @@ async function readSidecar(path: string): Promise<Partial<RadioTrack>> {
     return JSON.parse(await readFile(path, 'utf8')) as Partial<RadioTrack>
   } catch {
     return {}
+  }
+}
+
+/**
+ * Where one track's audio actually lives, and whether it is there at all.
+ *
+ * The reserved folder is searched first: a starred song has (or is about to have) its live
+ * copy swept, so the reserved copy is the authoritative one. Callers that must not throw on
+ * a missing file (the audio route) branch on `present` instead.
+ */
+async function filePathFor(
+  cfg: RadioConfig, id: string, ext: string,
+): Promise<{ readonly path: string; readonly present: boolean }> {
+  const reserved = join(cfg.starred, `${id}${ext}`)
+  if ((await stat(reserved).catch(() => null)) !== null) return { path: reserved, present: true }
+  const live = join(cfg.library, `${id}${ext}`)
+  if ((await stat(live).catch(() => null)) !== null) return { path: live, present: true }
+  return { path: live, present: false }
+}
+
+/** Create a folder on first use — the reserved one does not exist on an older install. */
+async function ensureDir(dir: string): Promise<void> {
+  try {
+    await mkdir(dir, { recursive: true })
+  } catch (error) {
+    // Two concurrent reservations can race here; an existing folder is success, not failure.
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+}
+
+/**
+ * Star means RESERVE, not rate (owner's rule, 2026-09-17 — his words: *"when I star a song that is
+ * being played it is copied to /radio/starred, and when that song finishes it will be deleted from
+ * /radio/live … Radio looks at live, our list looks at starred"*).
+ *
+ * The reserved copy is a full copy — same audio bytes, same metadata (title, station, seconds, bpm,
+ * key, lang, seed, caption, lyrics, created, and the share link if one exists), with `stars: 1` as
+ * the marker that this is a keeper rather than a rated song.
+ *
+ * The live copy is NOT deleted here: it is only marked `stars: 1` so the rotation drops it on the
+ * next poll, and the existing sweep removes it when the song ends or the owner goes off air. Deleting
+ * it here would cut off the song that is playing right now.
+ */
+export async function reserveTrack(cfg: RadioConfig, id: string): Promise<string> {
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('bad track id')
+  const source = await filePathFor(cfg, id, '.mp3')
+  if (!source.present) throw new Error('no audio for that song')
+  await ensureDir(cfg.starred)
+
+  // The sidecar is optional by design (a file dropped in by hand still plays), and a reserved copy
+  // without one would lose its title — so the live sidecar wins, the reserved one is the fallback
+  // when the live copy was already swept, and the id stands in when there is neither.
+  const liveMeta = await readSidecar(join(cfg.library, `${id}.json`))
+  const meta = Object.keys(liveMeta).length > 0
+    ? liveMeta
+    : await readSidecar(join(cfg.starred, `${id}.json`))
+  const reserved: Record<string, unknown> = { ...meta, id, stars: 1 }
+
+  await copyFile(source.path, join(cfg.starred, `${id}.mp3`))
+  await writeFile(join(cfg.starred, `${id}.json`), JSON.stringify(reserved, null, 1), 'utf8')
+
+  // Mark the LIVE copy too, when it is there: that is what takes the song out of the rotation.
+  try {
+    const liveMeta = await readSidecar(join(cfg.library, `${id}.json`))
+    await writeFile(join(cfg.library, `${id}.json`),
+      JSON.stringify({ ...liveMeta, stars: 1 }, null, 1), 'utf8')
+  } catch { /* no live copy left (already swept): the reservation stands on its own */ }
+  return id
+}
+
+/**
+ * Unstar: delete the reserved copy.
+ *
+ * There is no reserved-copy-to-live-copy move, and that is deliberate: the live pipeline's whole
+ * rule is "listened and gone", so a song that comes back would be a song the radio never played.
+ * Unstarring is therefore how a reservation is undone — the way to get rid of a song, which is what
+ * the star toggle has always meant. It is a real delete, so the route refuses an empty id and only
+ * ever touches `<starred>/<id>.(mp3|json)`.
+ */
+export async function unstarTrack(cfg: RadioConfig, id: string): Promise<void> {
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('bad track id')
+  for (const ext of ['.json', '.mp3']) {
+    try {
+      await unlink(join(cfg.starred, `${id}${ext}`))
+    } catch { /* already gone is the desired end state */ }
   }
 }
 
@@ -830,11 +936,16 @@ async function readHealth(cfg: RadioConfig): Promise<RadioHealth> {
 
 /** The payload the sidebar card and modal both render from. */
 export async function readRadioState(cfg: RadioConfig): Promise<RadioPayload> {
-  const [tracks, health] = await Promise.all([scanLibrary(cfg.library), readHealth(cfg)])
+  const [tracks, starred, health] = await Promise.all([
+    scanLibrary(cfg.library), scanLibrary(cfg.starred), readHealth(cfg),
+  ])
   const rated = tracks.filter(t => t.stars > 0)
   return {
     health,
     tracks: tracks.slice(0, 200),
+    // The reserved folder is its own list: what the radio plays and what the owner keeps are two
+    // different questions, and the modal's "Starred · N" is answered by this one (owner's rule).
+    starred: starred.slice(0, 200),
     stats: {
       count: tracks.length,
       rated: rated.length,
@@ -866,9 +977,12 @@ function pick<T>(list: readonly T[], used: ReadonlySet<string>, keyOf: (item: T)
 /**
  * Radio means radio: you listen to it and it is gone (owner's rule, 2026-09-17).
  *
- * Delete every song the radio itself wrote that the owner has NOT starred, except the ids in
- * `keep` — normally the one that is playing right now. Starred songs are the only permanent
- * residents of the library; without this, a month of listening becomes a thousand files.
+ * Delete every song the radio itself wrote, except the ids in `keep` — normally the one that is
+ * playing right now. There is no longer a rating exemption: since a star copies the song into the
+ * reserved folder FIRST (`reserveTrack`), the reserved folder is the survivor and the live copy is
+ * free to go. Measured consequence of the old `stars >= 1` exemption: a starred song sat in the live
+ * folder for ever, which is exactly what the owner asked to stop ("get it out of the radio live
+ * pipeline").
  *
  * Failure is silent by design: a song that will not delete is a song that stays, and that must never
  * break playback. A render in flight is skipped by construction — the renderer writes the mp3 first
@@ -894,7 +1008,6 @@ export async function pruneUnstarred(cfg: RadioConfig, keep: readonly string[] =
       continue
     }
     if (meta.radio !== true) continue
-    if (typeof meta.stars === 'number' && meta.stars >= 1) continue
     for (const ext of ['.json', '.mp3']) {
       try {
         await unlink(join(cfg.library, id + ext))
@@ -1043,17 +1156,31 @@ export async function generateTrack(
  * scrub is not a radio. Ranges are answered inline; anything else gets the whole
  * file. The path is validated to a `<id>.mp3` shape so a crafted request cannot
  * walk out of the library directory.
+ *
+ * `dirs` are searched in order and the FIRST existing file wins, so the caller passes the reserved
+ * folder before the live one: a starred song is served from `/starred`, which is the only place its
+ * audio still exists once the live copy is swept.
  */
 export function serveAudio(
-  req: IncomingMessage, res: ServerResponse, dir: string, id: string,
+  req: IncomingMessage, res: ServerResponse, dirs: string | readonly string[], id: string,
 ): void {
   if (!/^[A-Za-z0-9._-]+$/.test(id)) {
     res.writeHead(400, { 'content-type': 'text/plain' })
     res.end('bad id')
     return
   }
-  const path = join(dir, `${id}.mp3`)
-  void stat(path).then(info => {
+  const roots = typeof dirs === 'string' ? [dirs] : [...dirs]
+  const find = async (): Promise<string | null> => {
+    for (const dir of roots) {
+      const candidate = join(dir, `${id}.mp3`)
+      if ((await stat(candidate).catch(() => null)) !== null) return candidate
+    }
+    return null
+  }
+  void find().then(async found => {
+    if (found === null) throw new Error('not found')
+    const path = found
+    const info = await stat(path)
     const range = req.headers.range
     const head = { 'content-type': 'audio/mpeg', 'accept-ranges': 'bytes', 'cache-control': 'no-store' }
     if (typeof range === 'string' && /^bytes=\d*-\d*$/.test(range)) {

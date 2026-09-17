@@ -253,6 +253,15 @@ export interface RadioPayload {
   readonly health: RadioHealth
   /** Newest first, capped by the host half. */
   readonly tracks: readonly RadioTrack[]
+  /**
+   * The RESERVED list: songs the owner starred, read from the separate `starred` folder
+   * (owner's rule, 2026-09-17 — "Radio looks at live, our list looks at starred").
+   *
+   * OPTIONAL on purpose: a client newer than its host must degrade to an empty list, never throw.
+   * The bundled client and host halves are released at different times (`dsh web` restart vs page
+   * refresh), and a thrown component unmounts the whole sidebar seat.
+   */
+  readonly starred?: readonly RadioTrack[]
   readonly stats: {
     readonly count: number
     readonly rated: number
