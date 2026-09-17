@@ -125,11 +125,19 @@ command dump to the browser. Nothing is ever invented to fill a card.
 
 ```bash
 pnpm install
-pnpm build                       # tsdown → lib/index.js + lib/client.js
+pnpm build                       # tsdown → lib/index.js + lib/client.js  ← REQUIRED, see below
 dsh plugin --profile web add link:$PWD
 # then, once per harness install/upgrade:
 scripts/apply-dsh-ui-fixes.sh
 ```
+
+> **Why `pnpm build` is required here:** this published repository tracks **source only** — `lib/`
+> is gitignored, deliberately. `package.json` points `exports` at `./lib/index.js` and the harness
+> loads that file, so a clone with no build step cannot load the plugin. (Our private working copy
+> tracks `lib/` so a running rig never depends on a build; the public mirror trades that for clean
+> diffs and no committed build output.) `tsdown` cleans `lib/` at the start of every build, so a
+> failed build leaves it absent — re-run `pnpm build` after fixing the error, and if a working copy
+> ever loses it, `git checkout -- lib` restores the committed copy.
 
 The package declares `dsh.bundle.patch: ./cordis.patch.yml`, so adding it appends the bundle
 to the profile's layer stack and the row mounts on the next harness boot. Use a **hard
