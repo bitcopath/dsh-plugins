@@ -5,7 +5,8 @@ Out-of-tree plugins for [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deep
 GPU tracker in the sidebar that also names what ComfyUI is holding in VRAM, a
 harness version badge with an update check, three extra
 settings pages, a prompt-template dropdown in the composer, **video, audio and images that play
-inside the chat**, and provider failover for the agent loop.
+inside the chat**, provider failover for the agent loop, and a **radio station that writes its own
+songs** with a text model and renders them with a music model.
 
 Everything here is a **plugin occupant or a documented patch of an installed bundle** —
 not a fork. That is the point: `npm i -g @deepseek-ai/dsh@…` replaces the whole package
@@ -15,7 +16,7 @@ and that patch now re-applies itself.
 
 | Plugin | What it adds |
 |---|---|
-| `dsh-client-ui-hawk-hq` | Sidebar **GPU tracker** + a **ComfyUI panel** that names the models resident in VRAM, **DSH version badge**, three settings pages (**GPU Watchdog**, **Notifications**, **HQ Dashboard**), the composer **⚡ Skills…** dropdown |
+| `dsh-client-ui-hawk-hq` | Sidebar **GPU tracker** + a **ComfyUI panel** that names the models resident in VRAM, **DSH version badge**, three settings pages (**GPU Watchdog**, **Notifications**, **HQ Dashboard**), the composer **⚡ Skills…** dropdown, and **Hawk Radio** — an on-air card whose songs are written by a planner model and rendered by a music model |
 | `dsh-client-ui-hawk-media` | **Video, audio and images play inside the chat** — a native player under the line that names the file, the reference itself as the clickable caption, streamed by a `Range`-capable route because the built-in file route caps at 20 MiB and cannot seek |
 | `dsh-llm-hawk-failover` | **Provider failover** for the agent loop: quarantine a dead route, walk an ordered chain to a backup |
 
@@ -110,6 +111,33 @@ The bytes are streamed by the plugin's own `Range`-capable route, because the ch
 route caps at **20 MiB, buffers the whole file and cannot seek** — a clip therefore could not be
 played by the only route that existed for media. See
 [`plugins/dsh-client-ui-hawk-media/README.md`](plugins/dsh-client-ui-hawk-media/README.md).
+
+### Hawk Radio — a station whose songs do not exist yet
+
+A compact card in the sidebar (above the GPU cards) with the detail in a modal: press play and the
+radio goes on air. A **planner** — any text model the harness already has configured — writes the
+title, caption, lyrics, BPM/key and length; a **music model** (ACE-Step) renders the audio; the next
+song starts being written the moment the current one starts playing, so exactly one song is always
+ahead and the radio never waits on a render mid-song.
+
+Two folders hold the two lists, because "what the radio plays" and "what you kept" are different
+questions:
+
+| Folder | Role | Read by |
+|---|---|---|
+| **live** (`library`) | what the rotation plays, and what the sweep deletes as it moves on | the card, "N ready", `/radio/audio/<id>` |
+| **reserved** (`starred`) | what you starred — copied out of the live pipeline the moment you star it | the modal's **Starred** list, per-row sharing |
+
+The **star is a reservation, not a rating**: starring a song while it plays copies it into the
+reserved folder (audio bytes and full metadata, byte for byte) and marks the live copy so the
+rotation drops it immediately — the song that is playing still finishes. When it ends, or when the
+radio goes off air, the sweep deletes the live copy and the reserved copy is what survives. Playback
+and sharing resolve the reserved folder first, so a starred song keeps playing and keeps its link
+after its live copy is gone. A **silence switch** mutes the output for a phone call while the radio
+keeps running — position, advance and the one-song-ahead write all continue, which a pause would not.
+
+Nothing here needs a paid model: the planner is a model you already configured, and the renderer is
+your own machine. Details, routes and configuration: [`plugins/dsh-client-ui-hawk-hq/README.md`](plugins/dsh-client-ui-hawk-hq/README.md).
 
 ### Provider failover (`dsh-llm-hawk-failover`)
 
@@ -243,6 +271,8 @@ it the page shows an error card.
 ## What is deliberately not in this repo
 
 - the stats collector and the GPU guardian/watchdog scripts behind the log format
+- the share service that mints public links for a song (a small LAN container; the plugin talks to it
+  through `shareBase` + a shared secret, both of which stay in the private config)
 - our MCP servers (BookStack, Gmail, AI council, cron, notifications, session index)
 - our agent skills, prompts, and machine configuration
 - any credential, hostname or LAN address — the sanitized copy in this repo has none

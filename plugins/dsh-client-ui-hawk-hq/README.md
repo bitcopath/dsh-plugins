@@ -3,9 +3,10 @@
 An out-of-tree [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) plugin that
 puts the machine into the UI: a live **GPU tracker** in the sidebar that also names what
 **ComfyUI** is holding in VRAM, the running **harness version** next to it, three extra
-**settings pages**, and a **prompt-template dropdown** in the composer.
+**settings pages**, a **prompt-template dropdown** in the composer, and **Hawk Radio** — a
+radio station that writes its own songs with a text model and renders them with a music model.
 
-Six surfaces, one host half:
+Seven surfaces, one host half:
 
 | # | Surface | Registered as | Survives `npm i -g` |
 |---|---|---|---|
@@ -15,6 +16,7 @@ Six surfaces, one host half:
 | 4 | Settings → **Notifications** | `settings.section` (id `hawk-notifications`) | yes |
 | 5 | Settings → **HQ Dashboard** | `settings.section` (id `hawk-dashboard`) | yes |
 | 6 | Composer **⚡ Skills…** | `conversation.input.left` (id `hawk-composer-skills`) | yes |
+| 7 | Sidebar **Hawk Radio** card + modal | `sidebar.footer.action` (same occupant as #1) | yes |
 
 Plus two shell CSS overrides (user speech bubbles span the full chat width, and the
 sidebar-head spacing is tightened) — see "Fragile by nature" below.
@@ -45,6 +47,7 @@ npm registry.
 | `GET /plugin/hawk-hq/notifications/events` | SSE, live appends | |
 | `GET /plugin/hawk-hq/stats` | the stats SQLite DB, read-only through `python3` | balances, quotas, 14-day tokens, 30-day spend/top-ups |
 | `GET /plugin/hawk-hq/version` | the running harness version + the newest published | 30 min cache, stale-while-revalidate |
+| `GET /plugin/hawk-hq/radio` | host half of Hawk Radio (below) | health, tracks, **starred**, stats, settings |
 
 ## The GPU panel, in detail
 
@@ -246,16 +249,13 @@ pnpm test        # node test/semver.test.mjs — imports the TypeScript source d
                  # which needs Node's built-in type stripping (22.6+ flagged, on by default from 23.6)
 ```
 
-## License
-
-MIT
-
 ## Hawk Radio (2026-09-16) — a radio that plays songs which do not exist yet
 
 A compact card in the sidebar above the GPU cards, with the detail in a modal
 behind its gear button. Press play and it goes live: a **planner** (a text LLM)
-writes a song, a **music model** renders it on a separate machine, and the next
-song is written when the current one enters its final 30 seconds.
+writes a song's caption, lyrics and metadata, a **music model** (ACE-Step) renders it, and the
+next song starts being written the moment the current one starts playing — exactly one song
+ahead, never more.
 
 ### Two model pickers, never one list
 
@@ -267,6 +267,39 @@ song is written when the current one enters its final 30 seconds.
 They are deliberately separate: a music model cannot write words, and an LLM
 cannot make sound.
 
+### Two folders, one pipeline (star means reserve)
+
+The star on a song is **not** a rating — it is a **reservation**. Starring a song that is
+playing copies it out of the live pipeline into a second folder, and the live copy is swept
+when the song ends:
+
+| Folder | Config key | What reads it |
+|---|---|---|
+| **live** — what the radio rotates, plays and deletes | `library` (default `~/.local/share/hawk-radio/library`) | the rotation, the "N ready" count, the sweep, `/radio/audio/<id>` |
+| **reserved** — what the owner kept | `starred` (default: the sibling `starred/` folder, created on demand) | the modal's **Starred** list, per-row sharing |
+
+- `POST /radio/reserve {id}` copies mp3 + sidecar into `starred/`, keeping the full metadata
+  (title, station, seconds, bpm, key, lang, seed, caption, lyrics, created, share link) and marks
+  the **live** copy so the rotation drops it immediately — the song that is playing keeps playing
+  to its end.
+- The sweep runs when the next song starts and when the radio goes off air: every song the radio
+  wrote is deleted **except the ids in `keep`** (normally the one now playing). There is no rating
+  exemption — the reserved copy is the survivor, so nothing of value is lost by sweeping.
+- `POST /radio/unstar {id}` deletes the reserved copy. It is deliberately not a move back into
+  live: a song that came back would be a song the radio never played.
+- Because a reserved song is absent from the live folder, `/radio/audio/<id>` searches
+  `[starred, library]` and the share/revoke routes resolve whichever folder holds the song. The
+  reserved copy is therefore still playable and shareable after its live copy is gone.
+- Rotation is **newest-first, never wrapping**: songs the session has already played do not come
+  back, and `never` marks a hard negative.
+
+### Silence without stopping
+
+A phone call should not cost airtime. The mute switch (sidebar, and a chip in the modal) sets
+`audio.muted` and nothing else: the position keeps moving, the song ends on time, the next song is
+still written one ahead and the advance still happens. A *pause* would be going off air, and the
+sweep would take the song with it. The state lives in `localStorage`, so it survives a refresh.
+
 ### Configuration — no machine specifics in the code
 
 Everything machine-specific lives in a config file **outside this repository**
@@ -274,12 +307,16 @@ Everything machine-specific lives in a config file **outside this repository**
 
 | Key | Env override | Meaning |
 |---|---|---|
-| `library` | `HAWK_RADIO_LIBRARY` | where generated songs live (default `~/.local/share/hawk-radio/library`) |
-| `aceBase` | `HAWK_RADIO_ACE_BASE` | the renderer's base URL (an ACE-Step API) |
+| `library` | `HAWK_RADIO_LIBRARY` | the **live** folder (default `~/.local/share/hawk-radio/library`) |
+| `starred` | `HAWK_RADIO_STARRED` | the **reserved** folder (default: `starred/` beside `library`) |
+| `aceBase` | `HAWK_RADIO_ACE_BASE` | the renderer's base URL — defaults to `http://127.0.0.1:8001`, point it wherever ACE-Step runs |
 | `aceKey` | `HAWK_RADIO_ACE_KEY` | its API key, if it wants one |
 | `duration` | `HAWK_RADIO_DURATION` | seconds per generated song (10–600) |
+| `durationMin` / `durationMax` | `HAWK_RADIO_DURATION_MIN` / `_MAX` | a global song-length band (`0`/`0` = each station's own band) |
 | `planner` | `HAWK_RADIO_PLANNER` | selected planner, `provider:model` |
 | `musicModel` | `HAWK_RADIO_MUSIC_MODEL` | selected renderer model id |
+| `shareBase` | `HAWK_RADIO_SHARE_BASE` | optional LAN share service; empty disables the Share action |
+| `shareSecret` | `HAWK_RADIO_SHARE_SECRET` | that service's shared secret — never in this repo |
 
 The planner call goes through **the harness's own LLM service**, not a direct
 provider dial: provider keys live in the harness's sealed credential store and
@@ -290,20 +327,23 @@ can use any model you have configured — and no keys are duplicated into a plug
 
 | Route | Does |
 |---|---|
-| `GET /plugin/hawk-hq/radio` | the payload: health, tracks, stats, stations, current selections |
+| `GET /plugin/hawk-hq/radio` | the payload: health, `tracks` (live), `starred`, stats, stations, current selections |
 | `GET /plugin/hawk-hq/radio/models` | the two model lists |
-| `POST /plugin/hawk-hq/radio/rates` → `/rate` | set stars 1–5, `never` (a hard negative), or `played` |
+| `POST /plugin/hawk-hq/radio/reserve` | `{id}` — star: copy into the reserved folder, drop it from rotation |
+| `POST /plugin/hawk-hq/radio/unstar` | `{id}` — delete the reserved copy |
+| `POST /plugin/hawk-hq/radio/rate` | `never` (a hard negative) or `played`; `stars` is legacy and no longer used by the UI |
+| `POST /plugin/hawk-hq/radio/prune` | `{keep:[ids]}` — sweep the live folder, keeping those ids |
 | `POST /plugin/hawk-hq/radio/generate` | write one song — the only place a render starts |
-| `POST /plugin/hawk-hq/radio/settings` | persist the planner / music-model choice |
-| `GET /plugin/hawk-hq/radio/audio/<id>` | the mp3, **with byte-range support** so playback can be scrubbed |
+| `POST /plugin/hawk-hq/radio/settings` | persist the planner / music-model / length choice |
+| `POST /plugin/hawk-hq/radio/share` · `/revoke` | mint or kill a link through the optional share service |
+| `GET /plugin/hawk-hq/radio/audio/<id>` | the mp3 from the **reserved folder first, then live**, with byte-range support so playback can be scrubbed |
 
-### The library is an asset, not a cache
+### The songs are files, and the sidecar is the record
 
-Songs are `‹id›.mp3` plus a `‹id›.json` sidecar (title, station, bpm, key, seed,
-caption, lyrics, stars, never, plays). **Nothing is ever deleted** — a "never
-again" rating only excludes a track from playback, because these songs get reused
-as background music for films, ads and product videos later. Ratings are what the
-next adapter learns from, so they are stored per track and never thrown away.
+A song is `‹id›.mp3` plus a `‹id›.json` sidecar (title, station, seconds, bpm, key, lang, seed,
+caption, lyrics, stars, never, plays, share link). The sidecar is optional for playback — an mp3
+dropped in by hand still plays — and the measured tempo/key is the single source of that truth, so
+a caption never asserts a contradicting number. Nothing outside the two folders is read.
 
 ### Requirements for a fork
 
@@ -317,26 +357,28 @@ next adapter learns from, so they are stored per track and never thrown away.
 
 ### v1 scope: the radio GENERATES, it does not replay (owner, 2026-09-17)
 
-Ömer's decision, and it is a product decision, not a technical one:
+A product decision, not a technical one:
 
 > *"Play button … should take the radio online and generate new songs. For the recorded
 > songs we need another play button and it is not radio, it is like spotify now and beats
 > our purpose … We shouldn't go in there at version 1."*
 
-So:
-
-- **Play = on air.** Pressing play writes a new song (planner → renderer) and plays it, then
-  writes the next when the current one enters its last 30 seconds. It never silently becomes
-  a replay of yesterday's songs.
+- **Play = on air.** Pressing play writes a new song (planner → renderer, on demand, never on a
+  timer) and plays it; the next one is written the moment the current one starts, so exactly one
+  song is ever ahead.
 - **Only radio-written songs are in rotation** (`radio: true` in the sidecar). Anything that
-  arrived another way — imported, copied in by hand — is library material. It is counted and
-  kept, and it is deliberately *not* programming: replaying it here would turn this into a
-  music player, and a music player is a different product with its own feature set
-  (browsing, playlists, management of hundreds of songs across genres) which is shelved as
-  **v2** on the roadmap.
-- **`write 10 ahead`** is the only explicit render button: it fills the queue up front.
-- **The rail is information only** — the station in words, the song's name, where we are in
-  the song. Choosing a station happens in the modal, so the sidebar card stays small enough
-  to live above the GPU cards permanently.
-- **Nothing is deleted, ever.** Songs, ratings and seeds accumulate; the library is an asset
-  for films, ads and product videos, and the ratings are what the next adapter learns from.
+  arrived another way — imported, copied in by hand — is library material: it is kept and counted,
+  and it is deliberately *not* programming. Replaying it here would turn this into a music player,
+  which is a different product with its own feature set (browsing, playlists, managing hundreds of
+  songs) and is shelved as **v2** on the roadmap.
+- **`write 10 ahead`** is the only explicit bulk render button.
+- **The rail is information only** — the station, the song's name, where we are in the song.
+  Station, length, model pickers and the Starred list live in the modal, so the sidebar card stays
+  small enough to sit above the GPU cards permanently.
+- **Live songs are disposable by design; reserved songs are the asset.** A month of listening does
+  not become a thousand files: unstarred songs leave the live folder as the radio moves past them,
+  and what you starred is what you keep — the seed, caption and lyrics with it.
+
+## License
+
+MIT
