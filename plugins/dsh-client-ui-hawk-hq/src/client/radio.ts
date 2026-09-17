@@ -76,11 +76,19 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const [station, setStation] = useState('rock-classic-metal')
   const [goingLive, setGoingLive] = useState(false)
 
-  const tracks = radio?.tracks ?? []
+  // The client bundle is re-served on every page load while the host bundle only changes on a
+  // `dsh web` restart, so the two halves can disagree for a while. Every field is optional
+  // here on purpose: a missing one degrades this card, it never throws. (A throw in this
+  // component unmounts the whole `sidebar.footer.action` seat -- GPU cards included -- which
+  // is exactly what happened on 2026-09-17 when this client was newer than its host.)
+  const tracks = Array.isArray(radio?.tracks) ? radio.tracks : []
   const current = tracks.find(t => t.id === currentId) ?? null
-  const playable = tracks.filter(t => !t.never)
-  const planner = radio?.settings.planner ?? ''
-  const musicModel = radio?.settings.musicModel ?? ''
+  const playable = tracks.filter(t => t.never !== true)
+  const settings = radio?.settings ?? { planner: '', musicModel: '' }
+  const planner = typeof settings.planner === 'string' ? settings.planner : ''
+  const musicModel = typeof settings.musicModel === 'string' ? settings.musicModel : ''
+  const stations = Array.isArray(radio?.stations) ? radio.stations : []
+  const stats = radio?.stats ?? null
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -102,8 +110,11 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const loadModels = useCallback(async (): Promise<void> => {
     try {
       const res = await fetch(`${API}/radio/models`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setModels(await res.json() as { planners: readonly ModelChoice[]; music: readonly ModelChoice[] })
+      // An older host half has no such route at all: an empty dropdown is the honest answer,
+      // and it must not look like a failure.
+      if (!res.ok) return
+      const body = await res.json() as { planners?: readonly ModelChoice[]; music?: readonly ModelChoice[] }
+      setModels({ planners: body.planners ?? [], music: body.music ?? [] })
     } catch { /* an empty dropdown is an honest answer when the catalogue cannot be read */ }
   }, [])
 
@@ -119,9 +130,9 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   }, [refresh])
 
   /** Write one track for `forStation` — the only place a render can start. */
-  const write = useCallback(async (forStation: string): Promise<boolean> => {
+  const write = useCallback(async (forStation: string, count = 1): Promise<boolean> => {
     try {
-      await post('generate', { station: forStation })
+      await post('generate', { station: forStation, count })
       await refresh()
       return true
     } catch (err) {
@@ -219,9 +230,9 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
     await refresh()
   }, [current, refresh])
 
-  const generate = useCallback(async (): Promise<void> => {
-    setBusy('rendering…')
-    await write(station)
+  const generate = useCallback(async (count: number): Promise<void> => {
+    setBusy(count > 1 ? `writing ${count} ahead…` : 'rendering…')
+    await write(station, count)
     setBusy(null)
   }, [station, write])
 
@@ -240,7 +251,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
   const subtitle = current === null
     ? (goingLive
         ? 'writing the first song — seconds away'
-        : `${radio?.stats.count ?? 0} songs in library`)
+        : `${stats?.count ?? 0} songs in library`)
     : `${current.station}${current.bpm === null ? '' : ` · ${current.bpm} BPM`}`
 
   return h('div', { className: 'hhq-side hhq-radio' },
@@ -362,7 +373,7 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                       onClick: () => { void rate(n) },
                       title: `${n} star${n === 1 ? '' : 's'}`,
                     }, '★'))),
-                  h('button', { type: 'button', className: 'hhq-radio-chip', onClick: () => { void generate() } }, '♻ more like this'),
+                  h('button', { type: 'button', className: 'hhq-radio-chip', onClick: () => { void generate(1) } }, '♻ more like this'),
                   h('button', { type: 'button', className: 'hhq-radio-chip hhq-radio-chip-bad', onClick: () => { void neverAgain() } }, '✕ never again')),
 
                 h('div', { className: 'hhq-radio-row' },
@@ -370,13 +381,20 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                     h('select', {
                       value: station,
                       onChange: (event: ChangeEvent<HTMLSelectElement>) => setStation(event.target.value),
-                    }, (radio?.stations ?? []).map(s => h('option', { key: s, value: s }, s)))),
+                    }, stations.map(s => h('option', { key: s, value: s }, s)))),
                   h('button', {
                     type: 'button',
                     className: 'hhq-radio-btn hhq-radio-btn-go',
                     disabled: busy !== null || health?.up !== true,
-                    onClick: () => { void generate() },
-                  }, busy ?? 'Generate one')),
+                    onClick: () => { void generate(1) },
+                  }, busy ?? 'Generate one'),
+                  h('button', {
+                    type: 'button',
+                    className: 'hhq-radio-btn',
+                    title: 'Ask the planner for ten songs now and park them in the queue',
+                    disabled: busy !== null || health?.up !== true,
+                    onClick: () => { void generate(10) },
+                  }, 'write 10 ahead')),
                 h('div', { className: 'hhq-radio-hint' },
                   `Rendering runs on the ai-server and takes a few seconds. The next song is written when the current one enters its last ${LEAD_SECONDS}s, so nothing renders unless the radio is playing or you press the button.`),
 
@@ -407,16 +425,16 @@ export function RadioBlock({ wide }: { readonly wide: boolean }): ReactNode {
                   h('span', { className: 'hhq-radio-chip' }, `${tracks.filter(t => t.stars >= 4).length} songs · needs GPU`)),
                 h('div', { className: 'hhq-radio-act' },
                   h('span', null, 'Songs I turned off for good'),
-                  h('span', { className: 'hhq-radio-chip' }, String(radio?.stats.never ?? 0))),
+                  h('span', { className: 'hhq-radio-chip' }, String(stats?.never ?? 0))),
                 h('div', { className: 'hhq-radio-act' },
                   h('span', null, 'Library'),
                   h('span', { className: 'hhq-radio-chip' },
-                    `${radio?.stats.count ?? 0} songs · ${fmtGiB(radio?.stats.bytes ?? 0)}`)))),
+                    `${stats?.count ?? 0} songs · ${fmtGiB(stats?.bytes ?? 0)}`)))),
 
             h('div', { className: 'hhq-radio-foot' },
               h('span', null, health?.up === true
                 ? `ai-server · ${health.jobs ?? 0} jobs · ${health.avgSeconds === null ? '—' : `${health.avgSeconds.toFixed(1)}s`} avg`
                 : `ai-server unreachable${health?.error === undefined ? '' : ` · ${health.error.slice(0, 60)}`}`),
-              h('span', null, `${radio?.stats.rated ?? 0} rated · avg ${radio?.stats.starsAvg ?? '—'}★`))))
+              h('span', null, `${stats?.rated ?? 0} rated · avg ${stats?.starsAvg ?? '—'}★`))))
       : null)
 }

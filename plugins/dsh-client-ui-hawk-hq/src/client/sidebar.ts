@@ -8,12 +8,36 @@
  * 56px rail shrinks to a single heat dot with a tooltip.
  */
 
-import { createElement as h, useEffect, useState } from 'react'
+import { Component, createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { GpuStatePayload } from '../wire.ts'
 import { ComfyBlock } from './comfy.ts'
 import { RadioBlock } from './radio.ts'
 import { API, fmtUnit } from './util.ts'
+
+/**
+ * A per-block error boundary for the sidebar seat.
+ *
+ * Why this exists: the radio card and the GPU cards share ONE seat occupant, so a
+ * throw in either one unmounts the whole panel -- on 2026-09-17 a radio bug took
+ * the GPU cards off the sidebar with it. Each block now fails alone: the broken
+ * one disappears, the others keep working, and the console names the culprit.
+ */
+class BlockBoundary extends Component<{ readonly children?: ReactNode; readonly label: string }, { readonly failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.warn(`hawk-hq: ${this.props.label} block failed and was hidden`, error)
+  }
+
+  render(): ReactNode {
+    return this.state.failed === true ? null : this.props.children
+  }
+}
 
 /** Owner share of `sidebar.footer.action` (the shell passes column state). */
 interface SidebarGpuProps {
@@ -48,7 +72,7 @@ export function GpuSidebarWidget({ wide }: SidebarGpuProps): ReactNode {
   // Collapsed rail: one heat dot; the tooltip carries the numbers.
   if (!wide) {
     return h('span', { className: 'hhq-side-collapsed' },
-      h(RadioBlock, { wide: false }),
+      h(BlockBoundary, { label: 'radio' }, h(RadioBlock, { wide: false })),
       h('span', {
         className: `hhq-side-dot${tone}`,
         title: junc === null ? 'GPU: no data' : `GPU ${junc.toFixed(0)}°C · rung ${rung ?? '—'}`,
@@ -57,7 +81,7 @@ export function GpuSidebarWidget({ wide }: SidebarGpuProps): ReactNode {
 
   if (gpu === null) {
     return h('div', { className: 'hhq-side' },
-      h(RadioBlock, { wide }),
+      h(BlockBoundary, { label: 'radio' }, h(RadioBlock, { wide })),
       h('span', { className: 'hhq-side-dim' },
         state === null ? 'GPU connecting…' : 'GPU —'))
   }
@@ -72,7 +96,7 @@ export function GpuSidebarWidget({ wide }: SidebarGpuProps): ReactNode {
     // Radio sits ABOVE ComfyUI, which sits above the GPU readout: all three live
     // in this one occupant because separate occupants in this seat lay out side
     // by side instead of stacking.
-    h(RadioBlock, { wide }),
+    h(BlockBoundary, { label: 'radio' }, h(RadioBlock, { wide })),
     // ComfyUI sits ABOVE the GPU readout in the same occupant so the two stack.
     h(ComfyBlock, { comfy: state?.comfy ?? null }),
     h('div', { className: 'hhq-side-head' },
